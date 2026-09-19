@@ -1,0 +1,48 @@
+{
+  "name": "@gabedunn/pi-usage",
+  "version": "0.1.0",
+  "description": "Show current-account usage and DeepSeek API balance for supported providers.",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "usage",
+    "quota",
+    "balance",
+    "deepseek",
+    "fireworks",
+    "baseten",
+    "vercel-ai-gateway",
+    "codex",
+    "kimi",
+    "kimi-coding",
+    "moonshot",
+    "moonshotai",
+    "minimax",
+    "token-plan",
+    "copilot",
+    "openrouter",
+    "opencode",
+    "zen",
+    "zai",
+    "glm",
+    "xai",
+    "grok"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "check": "npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
