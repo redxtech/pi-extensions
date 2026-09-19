@@ -1,0 +1,13 @@
+{
+  "name": "@gabedunn/pi-extensions",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "bootstrap": "node ./scripts/link-pi-peers.mjs",
+    "test": "npm run bootstrap && npm run test --workspaces --if-present",
+    "check": "npm test"
+  }
+}
