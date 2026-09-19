@@ -572,7 +572,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     operation: (signal: AbortSignal) => Promise<T>,
     cancellable = true,
   ): Promise<T | undefined> => {
-    const { runTask } = await import("./kit/index.ts");
+    const { runTask } = await import("./menu/index.ts");
     if (parentSignal.aborted) return undefined;
     const result = await runTask(ctx, {
       label,
@@ -805,7 +805,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         invalidateProviderState(adapter.id);
         return true;
       };
-      const { defineMenu, runMenu } = await import("./kit/index.ts");
+      const { defineMenu, runMenu } = await import("./menu/index.ts");
       if (controller.signal.aborted || statusGeneration !== menuGeneration) return;
       type Screen = "main" | "providers" | "reset-picker" | "reset-confirm" | "reset-result" | "reset-error";
       type Action =

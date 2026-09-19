@@ -40,18 +40,6 @@ interface FrameLayoutOptions {
   priorityTailRows?: number;
 }
 
-export function renderFrame<ScreenId extends string, ActionId extends string>(
-  title: string,
-  lines: readonly string[],
-  content: readonly string[],
-  destination: "back" | "close",
-  width: number,
-  options: MenuScreenComponentOptions<ScreenId, ActionId>,
-  layout: FrameLayoutOptions = {},
-): string[] {
-  return renderFrameLayout(title, lines, content, destination, width, options, layout).lines;
-}
-
 export function renderFrameLayout<ScreenId extends string, ActionId extends string>(
   title: string,
   lines: readonly string[],

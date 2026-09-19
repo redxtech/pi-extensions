@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createTuiHarness } from "../src/kit/testing/index.ts";
+import { createTuiHarness } from "../src/menu/testing/index.ts";
 import { test } from "node:test";
 import { createMockContext, createMockPi } from "./support.ts";
 import usageExtension from "../src/usage.ts";

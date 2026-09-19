@@ -20,7 +20,7 @@ export async function showUsageSettings(
     if (ctx.hasUI) ctx.ui.notify(`Edit settings manually: ${settingsRuntime.get().path}`, "info");
     return false;
   }
-  const { HorizontalRule, renderBoundedFrame } = await import("./kit/index.ts");
+  const { HorizontalRule, renderBoundedFrame } = await import("./menu/index.ts");
   if (parentSignal.aborted || !isCurrent()) return false;
   return (
     (await ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {

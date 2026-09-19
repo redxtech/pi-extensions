@@ -13,8 +13,8 @@ async function emit(
   for (const handler of events.get(name) ?? []) await handler(...args);
 }
 
-test("declared generated entry preserves registration and partial lifecycle cleanup", async () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-usage-generated-entry-"));
+test("declared source entry preserves registration and partial lifecycle cleanup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-usage-entry-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, "agent");
   try {

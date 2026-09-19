@@ -158,7 +158,7 @@ Queries for another provider or all providers never publish their results to the
 ## 🔄 Provenance
 
 This package is a local fork of `@narumitw/pi-usage` from the upstream `pi-extensions` repository, imported into this personal extensions repository and decoupled from upstream packages.
-The menu, task, and frame primitives that upstream imported from `@narumitw/pi-tui-kit` are vendored in `src/kit/` as a pruned subset: only the actions and choice screens, task runner, and testing harness that `pi-usage` uses.
+The menu, task, and frame primitives that upstream imported from `@narumitw/pi-tui-kit` are vendored in `src/menu/` as a pruned subset: only the actions and choice screens, task runner, and testing harness that `pi-usage` uses.
 The tests run under plain `node --test` with a vendored `vi` shim instead of vitest.
 
 The upstream package itself replaced the deprecated `pi-codex-usage`.
@@ -216,7 +216,7 @@ packages/pi-usage/
 ├── src/                               # Provider adapters, auth, settings, and presentation
 │   ├── index.ts                       # Thin Pi entrypoint
 │   ├── usage.ts                       # Provider queries, cache, and menu
-│   └── kit/                           # Vendored pruned menu runtime (was @narumitw/pi-tui-kit)
+│   └── menu/                           # Vendored pruned menu runtime (was @narumitw/pi-tui-kit)
 ├── docs/                              # Reference documentation
 └── test/                              # Behavior and lifecycle coverage under node:test
 ```

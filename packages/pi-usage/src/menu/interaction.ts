@@ -11,11 +11,7 @@ import type {
   MenuTransition,
 } from "./types.ts";
 
-export type MenuInteraction =
-  | { kind: "activate"; itemId: string }
-  | { kind: "setting"; itemId: string; value: string }
-  | { kind: "multiSelect"; itemId: string; selected: boolean }
-  | { kind: "input"; value: string };
+export type MenuInteraction = { kind: "activate"; itemId: string };
 
 export interface InteractionInvocation<ScreenId extends string> {
   accepted: boolean;
@@ -69,44 +65,8 @@ export async function invokeMenuInteraction<
           item.id,
         );
       }
-      if (screen.kind === "review") {
-        if (!screen.confirm || screen.confirm.id !== interaction.itemId) return rejected();
-        return invokeAction(ctx, definition.actions[screen.confirm.action], state, signal, screen.confirm.id, runtime);
-      }
-      if (screen.kind === "multiSelect") {
-        const item = screen.actions?.find((candidate) => candidate.id === interaction.itemId);
-        if (!item || item.disabled) return rejected();
-        return activateActionItem(ctx, definition, item, state, signal, runtime);
-      }
       return rejected();
     }
-    case "setting": {
-      if (screen.kind !== "settings") return rejected();
-      const item = screen.items.find((candidate) => candidate.id === interaction.itemId);
-      if (!item || item.disabled) return rejected();
-      return withSelection(
-        await invokeAction(ctx, definition.actions[item.action], state, signal, item.id, runtime, {
-          value: interaction.value,
-        }),
-        item.id,
-      );
-    }
-    case "multiSelect": {
-      if (screen.kind !== "multiSelect") return rejected();
-      const item = screen.items.find((candidate) => candidate.id === interaction.itemId);
-      if (!item || item.disabled) return rejected();
-      return withSelection(
-        await invokeAction(ctx, definition.actions[screen.action], state, signal, item.id, runtime, {
-          selected: interaction.selected,
-        }),
-        item.id,
-      );
-    }
-    case "input":
-      if (screen.kind !== "input") return rejected();
-      return invokeAction(ctx, definition.actions[screen.action], state, signal, "input", runtime, {
-        value: interaction.value,
-      });
   }
 }
 
@@ -145,7 +105,7 @@ async function invokeBusyAction<State, ScreenId extends string, Context extends 
     signal,
     isCurrent: runtime.isCurrent,
     onError: () => undefined,
-    task: ({ signal: taskSignal }) => invokeAction(ctx, handler, state, taskSignal, itemId, runtime, {}, false),
+    task: ({ signal: taskSignal }) => invokeAction(ctx, handler, state, taskSignal, itemId, runtime, false),
   });
   switch (result.kind) {
     case "completed":
@@ -166,7 +126,6 @@ async function invokeAction<State, ScreenId extends string, Context extends Menu
   signal: AbortSignal,
   itemId: string,
   runtime: InteractionRuntimeOptions<Context>,
-  input: { value?: string; selected?: boolean } = {},
   abortIsStale = true,
 ): Promise<InteractionInvocation<ScreenId>> {
   if (!isMenuCurrent(runtime)) return { ...rejected<ScreenId>(), stale: true };
@@ -175,7 +134,7 @@ async function invokeAction<State, ScreenId extends string, Context extends Menu
   }
   let result: MenuActionResult<ScreenId>;
   try {
-    result = await handler({ ctx, state, signal, itemId, ...input });
+    result = await handler({ ctx, state, signal, itemId });
   } catch (error) {
     if (!isMenuCurrent(runtime)) return { ...rejected<ScreenId>(), stale: true };
     if (signal.aborted) {

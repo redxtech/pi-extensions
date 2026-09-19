@@ -40,6 +40,6 @@ The `pi-tool-renderer` tests also require Bun.
 - `pi-auto-rename` replaced an earlier integration with `@tifan/pi-rename`.
 - `pi-tool-renderer` is a modified version of the MIT-licensed renderer from [vstack](https://github.com/vanillagreencom/vstack).
 - `pi-double-escape` and `pi-model-presets` are local extensions.
-- `pi-usage` is a local fork of `@narumitw/pi-usage` from [narumiruna/pi-extensions](https://github.com/narumiruna/pi-extensions), with the upstream `@narumitw/pi-tui-kit` menu runtime vendored into `packages/pi-usage/src/kit` and the vitest suite ported to `node --test`.
+- `pi-usage` is a local fork of `@narumitw/pi-usage` from [narumiruna/pi-extensions](https://github.com/narumiruna/pi-extensions), with the upstream `@narumitw/pi-tui-kit` menu runtime vendored into `packages/pi-usage/src/menu` and the vitest suite ported to `node --test`.
 
 The first import came from commits `e9ac697`, `1397af6`, `79ef773`, `7ab90be`, and `b1e5cc1` in the previous Pi configuration repository.

@@ -14,56 +14,26 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type { MenuBrowseItem, MenuScreen, MenuSettingItem, ReviewScreen } from "../types.ts";
+import type { MenuScreen } from "../types.ts";
 import type {
-  MenuChangeResponse,
   MenuKeybindings,
   MenuScreenComponent,
   MenuScreenComponentOptions,
-  MultiSelectOptions,
 } from "./contracts.ts";
-import { createInputComponent, type InputOptions } from "./input.ts";
-import { createMultiSelectComponent } from "./multi-select.ts";
 import {
   actionMenuItemPresentation,
   actionMenuUnavailableDescription,
   handleSearchInput,
-  renderFrame,
   renderFrameLayout,
   safeMenuText,
 } from "./rendering.ts";
 
 export type {
-  MenuInputSubmit,
-  MenuMultiSelectChange,
   MenuScreenComponent,
   MenuScreenComponentOptions,
   MenuScreenEvent,
-  MenuSettingChange,
 } from "./contracts.ts";
 export { actionMenuDialogLabel, safeMenuText } from "./rendering.ts";
-
-// The pruned vendored kit keeps the menu runtime surface intact but omits the
-// browse, review, and mermaid components that pi-usage never renders. These
-// stubs preserve the runtime API so the unmodified menu loop keeps typechecking.
-
-export function prepareMenuScreenRendering<ScreenId extends string, ActionId extends string>(
-  _screen: MenuScreen<ScreenId, ActionId>,
-): Promise<void> | undefined {
-  return undefined;
-}
-
-export function browseDialogLabel(_item: MenuBrowseItem): string {
-  throw new Error("browse menu screens are not vendored in pi-usage");
-}
-
-export function browseDialogPages(_item: MenuBrowseItem): string[][] {
-  throw new Error("browse menu screens are not vendored in pi-usage");
-}
-
-export function reviewDialogPages<ActionId extends string>(_screen: ReviewScreen<ActionId>): string[][] {
-  throw new Error("review menu screens are not vendored in pi-usage");
-}
 
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -76,23 +46,11 @@ export function createMenuScreenComponent<ScreenId extends string, ActionId exte
     case "actions":
       component = createActionsComponent(options as ActionsOptions<ScreenId, ActionId>);
       break;
-    case "detail":
-      component = createDetailComponent(options as DetailOptions<ScreenId, ActionId>);
-      break;
     case "choice":
       component = createChoiceComponent(options as ChoiceOptions<ScreenId, ActionId>);
       break;
-    case "settings":
-      component = createSettingsComponent(options as SettingsOptions<ScreenId, ActionId>);
-      break;
-    case "input":
-      component = createInputComponent(options as InputOptions<ScreenId, ActionId>);
-      break;
-    case "multiSelect":
-      component = createMultiSelectComponent(options as MultiSelectOptions<ScreenId, ActionId>);
-      break;
     default:
-      throw new Error(`unsupported menu screen kind: ${options.screen.kind}`);
+      throw new Error("unsupported menu screen kind");
   }
   Object.defineProperty(component, "__piTuiKitScreen", { value: true });
   return component;
@@ -104,23 +62,11 @@ type ActionsOptions<ScreenId extends string, ActionId extends string> = MenuScre
 > & {
   screen: Extract<MenuScreen<ScreenId, ActionId>, { kind: "actions" }>;
 };
-type DetailOptions<ScreenId extends string, ActionId extends string> = MenuScreenComponentOptions<
-  ScreenId,
-  ActionId
-> & {
-  screen: Extract<MenuScreen<ScreenId, ActionId>, { kind: "detail" }>;
-};
 type ChoiceOptions<ScreenId extends string, ActionId extends string> = MenuScreenComponentOptions<
   ScreenId,
   ActionId
 > & {
   screen: Extract<MenuScreen<ScreenId, ActionId>, { kind: "choice" }>;
-};
-type SettingsOptions<ScreenId extends string, ActionId extends string> = MenuScreenComponentOptions<
-  ScreenId,
-  ActionId
-> & {
-  screen: Extract<MenuScreen<ScreenId, ActionId>, { kind: "settings" }>;
 };
 function createActionsComponent<ScreenId extends string, ActionId extends string>(
   options: ActionsOptions<ScreenId, ActionId>,
@@ -153,39 +99,6 @@ function createActionsComponent<ScreenId extends string, ActionId extends string
       return unavailable ? [unavailable] : [];
     },
   );
-}
-
-function createDetailComponent<ScreenId extends string, ActionId extends string>(
-  options: DetailOptions<ScreenId, ActionId>,
-): MenuScreenComponent {
-  let disposed = false;
-  return {
-    render(width) {
-      return renderFrame(
-        options.screen.title,
-        options.screen.lines,
-        [],
-        options.screen.hint ?? "back",
-        width,
-        options,
-        { confirmAction: "", navigation: false },
-      );
-    },
-    invalidate() {},
-    handleInput(data) {
-      if (disposed) return;
-      if (matchesKey(data, Key.ctrl("c"))) options.onEvent({ kind: "close" });
-      else if (options.keybindings.matches(data, "tui.select.cancel")) {
-        options.onEvent({ kind: options.screen.hint ?? "back" });
-      }
-    },
-    async waitForPending() {},
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      options.onDispose?.();
-    },
-  };
 }
 
 function createChoiceComponent<ScreenId extends string, ActionId extends string>(
@@ -466,278 +379,6 @@ function renderChoiceSearchInput(input: Input, width: number): string[] {
   return input.render(inputWidth).map((line) => truncateToWidth(`${prefix}${line}`, width, ""));
 }
 
-// Pi's current SettingsList cannot initialize its cursor, enforce disabled rows, expose search
-// focus, or await rejected saves. Keep this adapter local while matching its public presentation.
-function createSettingsComponent<ScreenId extends string, ActionId extends string>(
-  options: SettingsOptions<ScreenId, ActionId>,
-): MenuScreenComponent {
-  const searchInput = new Input();
-  const searchableItems = options.screen.items.map((item) => ({
-    item,
-    label: safeMenuText(item.label),
-  }));
-  let filteredItems = searchableItems;
-  const committed = new Map(options.screen.items.map((item) => [item.id, item.currentValue]));
-  const displayed = new Map(committed);
-  const revisions = new Map<string, number>();
-  let selectedIndex = Math.max(
-    0,
-    filteredItems.findIndex(({ item }) => item.id === options.selectedItemId),
-  );
-  let pending = Promise.resolve();
-  let disposed = false;
-  let closing = false;
-  let mousePressedIndex: number | undefined;
-  let mouseLayout: ListMouseLayout | undefined;
-  const selectedItem = () => filteredItems[selectedIndex]?.item;
-  const closeAfterPending = (kind: "back" | "close") => {
-    if (closing || disposed) return;
-    closing = true;
-    void pending.then(() => {
-      if (!disposed) options.onEvent({ kind });
-    });
-  };
-  const select = (index: number) => {
-    if (filteredItems.length === 0) return;
-    selectedIndex = (index + filteredItems.length) % filteredItems.length;
-    const item = selectedItem();
-    if (item) options.onSelectionChange?.(item.id);
-  };
-  const applyFilter = () => {
-    mousePressedIndex = undefined;
-    filteredItems = fuzzyFilter(searchableItems, searchInput.getValue(), (candidate) => candidate.label);
-    selectedIndex = 0;
-    const item = selectedItem();
-    if (item) options.onSelectionChange?.(item.id);
-  };
-  const activate = () => {
-    const item = selectedItem();
-    if (!item || item.disabled || closing || disposed) return;
-    const values = item.values ?? [item.currentValue];
-    if (values.length === 0) return;
-    const currentValue = displayed.get(item.id) ?? item.currentValue;
-    const currentIndex = values.indexOf(currentValue);
-    const value = values[(currentIndex + 1) % values.length] ?? currentValue;
-    displayed.set(item.id, value);
-    const revision = (revisions.get(item.id) ?? 0) + 1;
-    revisions.set(item.id, revision);
-    const operation = pending.then(async () => {
-      if (disposed) return;
-      const previousValue = committed.get(item.id) ?? item.currentValue;
-      let response: MenuChangeResponse<ScreenId> = false;
-      try {
-        response =
-          (await options.onSettingChange?.({
-            itemId: item.id,
-            value,
-            previousValue,
-          })) ?? false;
-      } catch (error) {
-        options.onError?.(error);
-      }
-      if (disposed) return;
-      const accepted = typeof response === "boolean" ? response : response.accepted;
-      if (accepted) committed.set(item.id, value);
-      else if (revisions.get(item.id) === revision) displayed.set(item.id, previousValue);
-      options.tui.requestRender();
-      if (accepted && typeof response !== "boolean") {
-        closing = true;
-        void pending.then(() => {
-          if (!disposed) options.onTransition?.(response.transition);
-        });
-      }
-    });
-    pending = operation.catch(() => undefined);
-  };
-  const component: MenuScreenComponent & Focusable = {
-    get focused() {
-      return searchInput.focused;
-    },
-    set focused(value: boolean) {
-      searchInput.focused = value;
-    },
-    render(width) {
-      const safeWidth = Math.max(1, width);
-      const settingsRows = renderSettingsRows(
-        filteredItems,
-        searchableItems,
-        selectedIndex,
-        displayed,
-        safeWidth,
-        options,
-      );
-      const content = [...searchInput.render(safeWidth), "", ...settingsRows.lines, ""];
-      const frame = renderFrameLayout(
-        options.screen.title,
-        options.screen.lines ?? [],
-        content,
-        "back",
-        safeWidth,
-        options,
-        {
-          compactOverflowText:
-            filteredItems.length > 1 ? `  (${selectedIndex + 1}/${filteredItems.length})` : undefined,
-          confirmAction: "change",
-          hint: settingsHint(options.keybindings),
-          pinnedContentRows: 1,
-          priorityTailRows: settingsRows.priorityTailRows,
-        },
-      );
-      mouseLayout = {
-        width: safeWidth,
-        inputFrameRow: frameRowForContent(frame, 0),
-        itemByFrameRow: itemRowsForFrame(frame, 2, settingsRows.viewportStart, settingsRows.visibleCount),
-      };
-      return frame.lines;
-    },
-    invalidate() {
-      mouseLayout = undefined;
-      searchInput.invalidate();
-    },
-    handleInput(data) {
-      if (disposed || closing) return;
-      mousePressedIndex = undefined;
-      if (matchesKey(data, Key.ctrl("c"))) closeAfterPending("close");
-      else if (options.keybindings.matches(data, "tui.select.cancel")) {
-        closeAfterPending("back");
-      } else if (options.keybindings.matches(data, "tui.select.up")) {
-        select(selectedIndex - 1);
-      } else if (options.keybindings.matches(data, "tui.select.down")) {
-        select(selectedIndex + 1);
-      } else if (options.keybindings.matches(data, "tui.select.pageUp")) select(0);
-      else if (options.keybindings.matches(data, "tui.select.pageDown")) {
-        select(filteredItems.length - 1);
-      } else if (options.keybindings.matches(data, "tui.select.confirm") || data === " ") {
-        activate();
-      } else {
-        handleSearchInput(searchInput, data);
-        applyFilter();
-      }
-      options.tui.requestRender();
-    },
-    handleMouse(event) {
-      if (disposed || closing) return undefined;
-      const inputResult = routeInputMouse(searchInput, event, mouseLayout, 0);
-      if (inputResult) return inputResult;
-      return routeListMouse(event, mouseLayout, {
-        selectedIndex,
-        itemCount: filteredItems.length,
-        onSelect: select,
-        onActivate: activate,
-        getPressedIndex: () => mousePressedIndex,
-        setPressedIndex: (index) => {
-          mousePressedIndex = index;
-        },
-      });
-    },
-    waitForPending: () => pending,
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      mousePressedIndex = undefined;
-      mouseLayout = undefined;
-      options.onDispose?.();
-    },
-  };
-  return component;
-}
-
-function renderSettingsRows<ScreenId extends string, ActionId extends string>(
-  filteredItems: readonly { item: MenuSettingItem<ActionId>; label: string }[],
-  allItems: readonly { item: MenuSettingItem<ActionId>; label: string }[],
-  selectedIndex: number,
-  displayed: ReadonlyMap<string, string>,
-  width: number,
-  options: SettingsOptions<ScreenId, ActionId>,
-): { lines: string[]; priorityTailRows: number; viewportStart: number; visibleCount: number } {
-  if (allItems.length === 0) {
-    return {
-      lines: [options.theme.fg("dim", "  No settings available")],
-      priorityTailRows: 1,
-      viewportStart: 0,
-      visibleCount: 0,
-    };
-  }
-  if (filteredItems.length === 0) {
-    return {
-      lines: [options.theme.fg("dim", "  No matching settings")],
-      priorityTailRows: 1,
-      viewportStart: 0,
-      visibleCount: 0,
-    };
-  }
-
-  const maxVisible = Math.min(filteredItems.length, 10);
-  const startIndex = Math.max(
-    0,
-    Math.min(selectedIndex - Math.floor(maxVisible / 2), filteredItems.length - maxVisible),
-  );
-  const endIndex = Math.min(startIndex + maxVisible, filteredItems.length);
-  const maxLabelWidth = Math.min(30, Math.max(...allItems.map((candidate) => visibleWidth(candidate.label))));
-  const lines: string[] = [];
-  for (let index = startIndex; index < endIndex; index += 1) {
-    const candidate = filteredItems[index];
-    if (!candidate) continue;
-    const { item, label } = candidate;
-    const selected = index === selectedIndex;
-    const prefix = selected ? options.theme.fg("accent", "→ ") : "  ";
-    const labelPadded = label + " ".repeat(Math.max(0, maxLabelWidth - visibleWidth(label)));
-    const currentValue = safeMenuText(displayed.get(item.id) ?? item.currentValue);
-    const value = item.disabled ? `(unavailable) ${currentValue}` : currentValue;
-    const valueWidth = Math.max(0, width - visibleWidth(prefix) - maxLabelWidth - 2);
-    let labelText = labelPadded;
-    let valueText = truncateToWidth(value, valueWidth, "");
-    if (selected) {
-      labelText = options.theme.fg("accent", labelText);
-      valueText = options.theme.fg("accent", valueText);
-    } else if (item.disabled) {
-      labelText = options.theme.fg("dim", labelText);
-      valueText = options.theme.fg("dim", valueText);
-    } else {
-      valueText = options.theme.fg("muted", valueText);
-    }
-    lines.push(truncateToWidth(`${prefix}${labelText}  ${valueText}`, width, ""));
-  }
-  if (startIndex > 0 || endIndex < filteredItems.length) {
-    lines.push(options.theme.fg("dim", `  (${selectedIndex + 1}/${filteredItems.length})`));
-  }
-  let priorityTailRows = 0;
-  const selected = filteredItems[selectedIndex]?.item;
-  if (selected?.description) {
-    lines.push("");
-    for (const line of wrapTextWithAnsi(safeMenuText(selected.description), Math.max(1, width - 4))) {
-      lines.push(options.theme.fg("dim", `  ${line}`));
-      priorityTailRows += 1;
-    }
-  }
-  return { lines, priorityTailRows, viewportStart: startIndex, visibleCount: endIndex - startIndex };
-}
-
-function settingsHint(keybindings: MenuKeybindings) {
-  const confirmKeys = uniqueHintKeys([...keybindings.getKeys("tui.select.confirm"), "space"]);
-  const cancelKeys = uniqueHintKeys(keybindings.getKeys("tui.select.cancel").filter((key) => key !== "ctrl+c"));
-  return [
-    "Type to search",
-    ...(confirmKeys ? [`${confirmKeys} to change`] : []),
-    ...(cancelKeys ? [`${cancelKeys} to go back`] : []),
-    "Ctrl+C to close",
-  ].join(" · ");
-}
-
-function uniqueHintKeys(keys: readonly string[]) {
-  return [...new Set(keys.map(displayHintKey).filter(Boolean))].join("/");
-}
-
-function displayHintKey(key: string) {
-  if (key === "enter") return "Enter";
-  if (key === "space") return "Space";
-  if (key === "escape") return "Esc";
-  if (key === "ctrl+c") return "Ctrl+C";
-  if (key === "up") return "↑";
-  if (key === "down") return "↓";
-  return safeMenuText(key);
-}
-
 interface ListMouseLayout {
   width: number;
   inputFrameRow?: number;
@@ -945,11 +586,4 @@ function setInitialSelection(list: SelectList, items: readonly SelectItem[], sel
   if (!selectedId) return;
   const index = items.findIndex((item) => item.value === selectedId);
   if (index >= 0) list.setSelectedIndex(index);
-}
-
-export function settingForAction<ActionId extends string>(
-  screen: Extract<MenuScreen<string, ActionId>, { kind: "settings" }>,
-  itemId: string,
-): MenuSettingItem<ActionId> | undefined {
-  return screen.items.find((item) => item.id === itemId);
 }

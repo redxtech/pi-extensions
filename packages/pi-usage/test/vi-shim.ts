@@ -6,6 +6,7 @@
 // of node:test without any third-party dependency.
 
 type Fn = (...args: unknown[]) => unknown;
+type AnyFn = (...args: any[]) => any;
 type OnceImplementation = Fn | { resolved: true; value: unknown };
 
 interface MockResult {
@@ -16,7 +17,7 @@ interface MockResult {
 export interface ViMock {
   (...args: unknown[]): unknown;
   mock: {
-    calls: unknown[][];
+    calls: any[][];
     results: MockResult[];
   };
   mockResolvedValue(value: unknown): ViMock;
@@ -86,8 +87,8 @@ function queueOnce(mock: ViMock, implementation: OnceImplementation) {
 }
 
 function conclusion(implementation: OnceImplementation): Fn {
-  if (implementation.resolved) {
-    const { value } = implementation;
+  if ("resolved" in implementation) {
+    const { value } = implementation as { resolved: true; value: unknown };
     return async () => value;
   }
   return implementation;
@@ -155,9 +156,12 @@ function installFakeDate() {
     static now() {
       return clock?.now ?? RealDate.now();
     }
-    constructor(...args: ConstructorParameters<typeof RealDate>) {
-      if (args.length === 0) super(clock?.now ?? RealDate.now());
-      else super(...args);
+    constructor(...args: unknown[]) {
+      if (args.length === 0) {
+        super(clock?.now ?? RealDate.now());
+        return;
+      }
+      super(args[0] as number | string | Date);
     }
   }
   globalThis.Date = FakeDate as unknown as typeof Date;
@@ -228,7 +232,7 @@ function restoreOriginalGlobals() {
 }
 
 export const vi = {
-  fn(implementation?: Fn) {
+  fn(implementation?: AnyFn) {
     return createMock(implementation);
   },
   spyOn<T extends object>(target: T, key: keyof T & (string | symbol)): ViMock {
