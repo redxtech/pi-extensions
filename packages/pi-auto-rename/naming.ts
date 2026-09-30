@@ -5,6 +5,7 @@ import type { RenameLanguage } from "./language.ts"
 import {
   formatRenameModelKey,
   getRenameModelAuth,
+  getRenameModelPreferences,
   type RenameModelConfig,
 } from "./models.ts"
 
@@ -172,10 +173,21 @@ export async function generateRename(
   context: UserMessageContext,
   language: RenameLanguage,
 ): Promise<RenameResult | undefined> {
-  try {
-    const modelAuth = await getRenameModelAuth(ctx, modelConfig)
+  const reasons: string[] = []
+  if (modelConfig.kind === "invalid") reasons.push("invalid rename model config")
 
-    if (modelAuth.status === "ok") {
+  for (const preference of getRenameModelPreferences(modelConfig)) {
+    if (ctx.signal?.aborted) return undefined
+    const modelKey = formatRenameModelKey(preference)
+
+    try {
+      const modelAuth = await getRenameModelAuth(ctx, preference)
+      if (ctx.signal?.aborted) return undefined
+      if (modelAuth.status !== "ok") {
+        reasons.push(`${modelKey}: unavailable or not authenticated`)
+        continue
+      }
+
       const response = await ctx.modelRegistry.complete(
         modelAuth.auth.model,
         {
@@ -187,8 +199,10 @@ export async function generateRename(
           maxRetries: 0,
           cacheRetention: "none",
           timeoutMs: RENAME_REQUEST_TIMEOUT_MS,
+          signal: ctx.signal,
         },
       )
+      if (ctx.signal?.aborted) return undefined
 
       if (response.stopReason === "stop") {
         const name = sanitizeRenameText(
@@ -196,41 +210,20 @@ export async function generateRename(
           language,
         )
         if (name) return { source: "model", name }
+        reasons.push(`${modelKey}: empty session name`)
+      } else {
+        reasons.push(`${modelKey}: stopped with ${response.stopReason}`)
       }
-
-      const name = fallbackRenameName(context, language)
-      return name
-        ? {
-            source: "fallback",
-            name,
-            reason: `rename model stopped with ${response.stopReason}`,
-          }
-        : undefined
+    } catch (error) {
+      if (ctx.signal?.aborted) return undefined
+      const reason = error instanceof Error ? error.message : String(error)
+      reasons.push(`${modelKey}: ${reason}`)
     }
-
-    const name = fallbackRenameName(context, language)
-    if (!name) return undefined
-
-    if (modelAuth.status === "invalid-config") {
-      return {
-        source: "fallback",
-        name,
-        reason: "invalid rename model config",
-      }
-    }
-
-    const modelName = modelAuth.model
-      ? formatRenameModelKey(modelAuth.model)
-      : "unknown"
-    return {
-      source: "fallback",
-      name,
-      reason: `rename model is not authenticated: ${modelName}`,
-    }
-  } catch (error) {
-    const name = fallbackRenameName(context, language)
-    if (!name) return undefined
-    const reason = error instanceof Error ? error.message : String(error)
-    return { source: "fallback", name, reason }
   }
+
+  if (ctx.signal?.aborted) return undefined
+  const name = fallbackRenameName(context, language)
+  return name
+    ? { source: "fallback", name, reason: reasons.join("\n") }
+    : undefined
 }

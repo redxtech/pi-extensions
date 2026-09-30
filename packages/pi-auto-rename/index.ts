@@ -16,7 +16,7 @@ import {
   parseRenameLanguage,
   type RenameLanguage,
 } from "./language.ts"
-import { pickRenameModel } from "./model-picker.ts"
+import { pickRenameModels } from "./model-picker.ts"
 import {
   createRenameState,
   deleteModelPreference,
@@ -25,8 +25,9 @@ import {
   formatRenameModelKey,
   getAuthenticatedTextModels,
   getRenameModelAuth,
+  getRenameModelPreferences,
   resolveInitialRenameConfig,
-  saveModelPreference,
+  saveModelPreferences,
   saveRenameLanguage,
   type RenameState,
 } from "./models.ts"
@@ -43,12 +44,12 @@ const RENAME_SUBCOMMANDS: AutocompleteItem[] = [
   {
     value: "status",
     label: "status",
-    description: "Show model and rename status",
+    description: "Show models and rename status",
   },
   {
     value: "config",
     label: "config",
-    description: "Choose the rename model",
+    description: "Choose the rename models in order",
   },
   {
     value: "help",
@@ -131,7 +132,7 @@ async function runRenameCommand(
       ctx.ui.notify(
         [
           `Session renamed with fallback: ${result.name}`,
-          `Could not use rename model: ${result.reason}`,
+          `Could not use rename models: ${result.reason}`,
           ...(herdrError ? [`Herdr label rename failed: ${herdrError}`] : []),
         ].join("\n"),
         "warning",
@@ -173,29 +174,24 @@ async function configureRenameModel(
   state: RenameState,
 ): Promise<void> {
   const models = await getAuthenticatedTextModels(ctx)
-  if (models.length === 0) {
-    ctx.ui.notify(
-      "No authenticated models available. Run /login or configure a model first.",
-      "error",
-    )
-    return
-  }
-
-  const result = await pickRenameModel(ctx, models)
+  const selected = state.modelConfig.kind === "configured"
+    ? state.modelConfig.models
+    : []
+  const result = await pickRenameModels(ctx, models, selected)
   if (result.action === "cancel") return
 
   try {
     if (result.action === "default") {
       deleteModelPreference()
       state.modelConfig = { kind: "missing" }
-      ctx.ui.notify("Rename model reset to default.", "info")
+      ctx.ui.notify("Rename models reset to default.", "info")
       return
     }
 
-    saveModelPreference(result.model)
-    state.modelConfig = { kind: "configured", model: result.model }
+    saveModelPreferences(result.models)
+    state.modelConfig = { kind: "configured", models: result.models }
     ctx.ui.notify(
-      `Rename model set to ${formatRenameModelKey(result.model)}.`,
+      `Rename models set to ${result.models.map(formatRenameModelKey).join(" → ")}.`,
       "info",
     )
   } catch (error) {
@@ -229,23 +225,19 @@ async function notifyRenameStatus(
   ctx: ExtensionContext,
   state: RenameState,
 ): Promise<void> {
-  let selectedModelLine = `selected model: ${formatModelPreference(state.modelConfig)}`
-  let activeModelLine: string
-
-  try {
-    const modelAuth = await getRenameModelAuth(ctx, state.modelConfig)
-    if (modelAuth.status === "ok") {
-      const suffix = modelAuth.source === "default" ? " (default)" : ""
-      selectedModelLine = `selected model: ${formatAuthModelKey(modelAuth.auth)}${suffix}`
-      activeModelLine = `active model: ${formatAuthModelKey(modelAuth.auth)}`
-    } else if (modelAuth.status === "invalid-config") {
-      activeModelLine = "active model: none (invalid config)"
-    } else {
-      activeModelLine = "active model: none"
+  const selectedModelsLine = `selected models: ${formatModelPreference(state.modelConfig)}`
+  const availableModels: string[] = []
+  for (const preference of getRenameModelPreferences(state.modelConfig)) {
+    try {
+      const modelAuth = await getRenameModelAuth(ctx, preference)
+      if (modelAuth.status === "ok") {
+        availableModels.push(formatAuthModelKey(modelAuth.auth))
+      }
+    } catch {
+      availableModels.push(`${formatRenameModelKey(preference)} (auth check failed)`)
     }
-  } catch {
-    activeModelLine = "active model: unknown (auth check failed)"
   }
+  const availableModelsLine = `available models: ${availableModels.join(" → ") || "none"}`
 
   const context = getUserMessageContext(getCurrentSessionMessages(ctx))
   const herdrLine = `herdr: ${process.env["HERDR_PANE_ID"]?.trim() ? "available" : "unavailable"}`
@@ -254,8 +246,8 @@ async function notifyRenameStatus(
   ctx.ui.notify(
     [
       "pi-rename status",
-      selectedModelLine,
-      activeModelLine,
+      selectedModelsLine,
+      availableModelsLine,
       `language: ${state.language}`,
       herdrLine,
       contextLine,
@@ -304,8 +296,8 @@ export default function autoRename(pi: ExtensionAPI): void {
           [
             "pi-rename commands",
             "/rename - generate and apply a session name",
-            "/rename status - show model and rename status",
-            "/rename config - choose the rename model",
+            "/rename status - show models and rename status",
+            "/rename config - choose the rename models in order",
             "/rename config language <auto|BCP-47> - set name language",
             "/rename help - show this help",
           ].join("\n"),

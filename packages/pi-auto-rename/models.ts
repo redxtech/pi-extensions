@@ -32,23 +32,24 @@ interface RenameModelAuth {
 export type RenameModelConfig =
   | { readonly kind: "missing" }
   | { readonly kind: "invalid" }
-  | { readonly kind: "configured"; readonly model: RenameModelPreference }
+  | {
+      readonly kind: "configured"
+      readonly models: readonly RenameModelPreference[]
+    }
 
 export type ResolvedRenameModelAuth =
   | {
       readonly status: "ok"
       readonly auth: RenameModelAuth
-      readonly source: "configured" | "default"
     }
-  | { readonly status: "invalid-config" }
   | {
       readonly status: "unauthenticated"
-      readonly model: RenameModelPreference | undefined
-      readonly source: "configured" | "default"
+      readonly model: RenameModelPreference
     }
 
 interface RenameConfig extends Record<string, unknown> {
   model?: unknown
+  models?: unknown
   language?: unknown
 }
 
@@ -81,7 +82,9 @@ export function formatAuthModelKey(auth: RenameModelAuth): string {
 }
 
 export function formatModelPreference(config: RenameModelConfig): string {
-  if (config.kind === "configured") return formatRenameModelKey(config.model)
+  if (config.kind === "configured") {
+    return config.models.map(formatRenameModelKey).join(" → ")
+  }
   if (config.kind === "invalid") return "invalid"
   return "default"
 }
@@ -127,8 +130,17 @@ function updateConfig(update: Partial<RenameConfig>): void {
   writeConfig({ ...readConfigForUpdate(), ...update })
 }
 
-export function saveModelPreference(model: RenameModelPreference): void {
-  updateConfig({ model: formatRenameModelKey(model) })
+export function saveModelPreferences(
+  models: readonly RenameModelPreference[],
+): void {
+  const keys = models.map(formatRenameModelKey)
+  if (keys.length === 0 || keys.some((key) => !parseModelSpec(key))) {
+    throw new Error("Rename models must be a non-empty list of provider/model IDs")
+  }
+
+  const config = readConfigForUpdate()
+  delete config.model
+  writeConfig({ ...config, models: keys })
 }
 
 export function saveRenameLanguage(language: RenameLanguage): void {
@@ -140,6 +152,7 @@ export function deleteModelPreference(): void {
 
   const config = readConfigForUpdate()
   delete config.model
+  delete config.models
   if (Object.keys(config).length === 0) {
     rmSync(CONFIG_PATH)
     return
@@ -149,11 +162,29 @@ export function deleteModelPreference(): void {
 }
 
 function resolveModelConfig(config: RenameConfig): RenameModelConfig {
-  if (config.model === undefined) return { kind: "missing" }
-  if (typeof config.model !== "string") return { kind: "invalid" }
+  if (config.models === undefined && config.model === undefined) {
+    return { kind: "missing" }
+  }
 
-  const model = parseModelSpec(config.model)
-  return model ? { kind: "configured", model } : { kind: "invalid" }
+  const values = config.models !== undefined ? config.models : [config.model]
+  if (!Array.isArray(values) || values.length === 0) return { kind: "invalid" }
+
+  const models: RenameModelPreference[] = []
+  for (const value of values) {
+    if (typeof value !== "string") return { kind: "invalid" }
+    const model = parseModelSpec(value)
+    if (!model) return { kind: "invalid" }
+    models.push(model)
+  }
+
+  return { kind: "configured", models }
+}
+
+export function getRenameModelPreferences(
+  config: RenameModelConfig,
+): readonly RenameModelPreference[] {
+  if (config.kind === "invalid") return []
+  return config.kind === "configured" ? config.models : [DEFAULT_RENAME_MODEL]
 }
 
 export function resolveInitialRenameConfig(): RenameState {
@@ -173,42 +204,17 @@ export function resolveInitialRenameConfig(): RenameState {
   }
 }
 
-async function getModelAuth(
-  ctx: ExtensionContext,
-  preference: RenameModelPreference,
-): Promise<RenameModelAuth | undefined> {
-  const model = ctx.modelRegistry.find(preference.provider, preference.id)
-  if (!model) return undefined
-
-  const auth = await ctx.modelRegistry.getProviderAuth(model.provider)
-  return auth?.auth.apiKey ? { model } : undefined
-}
-
 export async function getRenameModelAuth(
   ctx: ExtensionContext,
-  config: RenameModelConfig,
+  preference: RenameModelPreference,
 ): Promise<ResolvedRenameModelAuth> {
-  if (config.kind === "invalid") return { status: "invalid-config" }
-
-  if (config.kind === "configured") {
-    const auth = await getModelAuth(ctx, config.model)
-    return auth
-      ? { status: "ok", auth, source: "configured" }
-      : {
-          status: "unauthenticated",
-          model: config.model,
-          source: "configured",
-        }
+  const model = ctx.modelRegistry.find(preference.provider, preference.id)
+  if (model?.input.includes("text")) {
+    const auth = await ctx.modelRegistry.getProviderAuth(model.provider)
+    if (auth?.auth.apiKey) return { status: "ok", auth: { model } }
   }
 
-  const auth = await getModelAuth(ctx, DEFAULT_RENAME_MODEL)
-  return auth
-    ? { status: "ok", auth, source: "default" }
-    : {
-        status: "unauthenticated",
-        model: DEFAULT_RENAME_MODEL,
-        source: "default",
-      }
+  return { status: "unauthenticated", model: preference }
 }
 
 export async function getAuthenticatedTextModels(
