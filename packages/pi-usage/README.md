@@ -63,7 +63,7 @@ Read the [query and reset guide](./docs/operations.md) for target selection, can
 
 ## ⚙️ Settings
 
-Choose **Settings** in `/usage` to edit Codex Fast mode and the Codex reset countdown through Pi's settings-list interaction in TUI mode.
+Choose **Settings** in `/usage` to edit Codex Fast mode, the Codex reset countdown, and the OpenAI Codex usage fallback through Pi's settings-list interaction in TUI mode.
 RPC mode reports the active manual settings path instead of opening terminal UI.
 
 These preferences live in `pi-usage.json` under Pi's user agent directory, normally `~/.pi/agent/pi-usage.json`.
@@ -77,6 +77,48 @@ Separate Pi processes are not mutually locked.
 Target selections are stored only as IDs in the provider-neutral `selectedTargets` object in this file and are managed through `/usage`, not the Settings screen.
 The former `fireworksAccountId` field remains read-compatible: it supplies `selectedTargets.fireworks` in memory only when the generic value is absent.
 A successful explicit Fireworks account selection writes the generic field and removes the legacy field atomically; ordinary reads do not rewrite the file.
+
+### OpenAI Codex usage fallback
+
+`openaiCodexUsageFallback` defaults to `false`. It is a workaround for an active `openai` subscription OAuth connection without native usage reporting.
+It shows legacy Codex usage from a separately configured `openai-codex` connection.
+It does not change the inference model or measure this app's cap.
+API keys and unsupported custom credentials cannot use the fallback.
+The active OAuth credential must include `chatgpt.tokens.use.direct`.
+
+1. Configure both OAuth connections in Pi.
+2. Select the `openai` subscription model.
+3. Open `/usage`.
+4. Open **Settings**.
+5. Set **OpenAI Codex usage fallback** to On.
+6. Return to the usage menu.
+7. Select **Pair Codex fallback…**.
+8. Confirm only if both connections use the same ChatGPT account and workspace.
+
+In RPC mode, set `openaiCodexUsageFallback` to `true` in `pi-usage.json` and run `/reload` before step 7.
+Enabling the setting does not authorize a Codex usage request.
+The menu and statusline show **pairing required** until you confirm the pairing.
+Canceling the confirmation does not save a pairing or request Codex usage for an unpaired connection.
+Session, model, and turn refreshes never open a confirmation dialog.
+
+Pairing is your assertion, not automatic same-account verification.
+The two OAuth subjects can differ, and the new token need not contain a legacy account ID.
+The extension checks each runtime credential against complete OAuth candidates independently.
+Decoded claims are local identity hints only.
+
+`openaiCodexUsagePairing` stores version 1 and two SHA-256 identity hashes, not tokens or account IDs.
+The hashes cover the new issuer, subject, and client ID, plus the legacy issuer, subject, and account ID.
+Ordinary token refresh preserves the pairing.
+An identity change requires **Re-pair Codex fallback…**, which explicitly replaces the prior confirmation.
+Use **Remove Codex fallback pairing** to remove the confirmation, or turn the setting Off to stop fallback requests.
+Invalid settings, missing scopes, and incomplete credentials fail closed.
+
+The extension labels this report **Codex fallback** in `/usage` and the statusline by default.
+Set `showOpenaiCodexUsageFallbackLabel` to `false` in `pi-usage.json` to omit `fallback` from the usage title and statusline.
+This display preference defaults to `true` and does not change pairing, authentication, or the app-cap warning.
+It preserves Codex buckets and source metadata without treating the report as independently verified OpenAI usage.
+The Codex reset countdown setting also applies to the fallback.
+Fast mode and reset redemption remain unavailable while `openai` is active.
 
 ### Codex Fast mode
 
@@ -173,11 +215,15 @@ Behavior changes from `pi-codex-usage`:
 
 Credential candidates are collected synchronously in memory and are not cached, persisted, logged, formatted, or appended to the Pi session.
 The protocol carries no account name or extension identity.
-Only the selected provider's exact runtime match is used, and secrets are sent only to its validated official origin.
+Only exact runtime credential matches are used, and secrets are sent only to a fixed or validated official origin.
 Read-only Codex usage also supports a proxied current model when its resolved Bearer token exactly matches one complete Pi OAuth credential.
 The extension drops proxy headers and sends only the matched Bearer token and `chatgpt-account-id` to the fixed ChatGPT usage endpoint.
 It rejects usage responses without the matching `account_id`.
-Codex reset-credit listing and redemption actions remain unavailable for proxy origins.
+The opt-in OpenAI fallback also permits configured direct or HTTP/HTTPS proxy inference models after explicit pairing.
+Usage requests still go only to the fixed HTTPS ChatGPT endpoint, with redirects refused and the response account ID checked.
+This does not make HTTP inference secure.
+Fallback cache and publication checks bind both connection identities, current credentials, opt-in, pairing, model, and session.
+Codex reset-credit listing and redemption actions remain unavailable for proxy origins and for active `openai` models.
 DeepSeek balance requests require Bearer authentication, send only that resolved credential from Pi's runtime auth to `https://api.deepseek.com/user/balance`, and refuse redirects.
 Fireworks spend requests send only that resolved credential to the official `https://api.fireworks.ai` account-listing and billing-summary endpoints and refuse redirects.
 Moonshot balance requests send only the resolved Bearer credential to the matching official Global or China balance origin and refuse redirects.
@@ -195,7 +241,7 @@ An absent or incompatible peer preserves standalone fallback and fail-closed mis
 - GitHub Copilot quota, Kimi managed usage, Z.AI quota, and OpenAI Codex reset redemption rely on provider-owned endpoints that may change without notice.
 - Codex reset redemption requires a current ChatGPT OAuth credential from Pi's login or a compatible credential source; Codex API keys cannot redeem earned subscription resets.
 - xAI usage supports only a uniquely matched Pi OAuth subscription credential; xAI API keys and Management API credentials are unsupported.
-- Credentials resolved for custom provider base URLs are not forwarded to official usage endpoints, except for the strictly matched, read-only Codex proxy flow described above; effective auth origin validation requires Pi 0.81.0 or newer.
+- Credentials resolved for custom provider base URLs are not forwarded to official usage endpoints, except for the strictly matched, read-only Codex proxy and explicitly paired OpenAI fallback flows described above; effective auth origin validation requires Pi 0.81.0 or newer.
 - Provider reports are snapshots and may themselves be delayed by the provider.
 - DeepSeek reports current API balance only; it does not expose historical usage, quota windows, reset times, or account-wide token totals through the balance endpoint.
 - Fireworks reports rated 30-day spend only; credit balance and spend caps are visible only in the Fireworks web console, and `/usage` must select one visible account before querying a multi-account key.

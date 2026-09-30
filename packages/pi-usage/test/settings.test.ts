@@ -24,14 +24,46 @@ afterEach(async () => {
 
 test("normalizes owned settings and ignores the retired xAI field", () => {
   assert.deepEqual(normalizeUsageSettings({}), DEFAULT_USAGE_SETTINGS);
+  assert.equal(DEFAULT_USAGE_SETTINGS.openaiCodexUsageFallback, false);
+  assert.equal(normalizeUsageSettings({ openaiCodexUsageFallback: "true" }), undefined);
+  assert.equal(normalizeUsageSettings({ openaiCodexUsagePairing: { version: 1 } }), undefined);
+  assert.equal(
+    normalizeUsageSettings({
+      openaiCodexUsagePairing: {
+        version: 1,
+        openaiIdentityHash: "a".repeat(64),
+        codexIdentityHash: "b".repeat(64),
+        accessToken: "must not be persisted",
+      },
+    }),
+    undefined,
+  );
+  assert.deepEqual(
+    normalizeUsageSettings({
+      openaiCodexUsagePairing: {
+        version: 1,
+        openaiIdentityHash: "a".repeat(64),
+        codexIdentityHash: "b".repeat(64),
+      },
+    })?.openaiCodexUsagePairing,
+    {
+      version: 1,
+      openaiIdentityHash: "a".repeat(64),
+      codexIdentityHash: "b".repeat(64),
+    },
+  );
   assert.deepEqual(normalizeUsageSettings({ codexFastMode: true }), {
     codexFastMode: true,
     codexStatusResetCountdown: true,
+    openaiCodexUsageFallback: false,
+    showOpenaiCodexUsageFallbackLabel: true,
     selectedTargets: {},
   });
   assert.deepEqual(normalizeUsageSettings({ fireworksAccountId: "acme-prod" }), {
     codexFastMode: false,
     codexStatusResetCountdown: true,
+    openaiCodexUsageFallback: false,
+    showOpenaiCodexUsageFallbackLabel: true,
     selectedTargets: { fireworks: "acme-prod" },
   });
   assert.deepEqual(
@@ -42,6 +74,8 @@ test("normalizes owned settings and ignores the retired xAI field", () => {
     {
       codexFastMode: false,
       codexStatusResetCountdown: true,
+      openaiCodexUsageFallback: false,
+      showOpenaiCodexUsageFallbackLabel: true,
       selectedTargets: { fireworks: "current", custom: "project-1" },
     },
   );
@@ -54,6 +88,32 @@ test("normalizes owned settings and ignores the retired xAI field", () => {
   assert.equal(normalizeUsageSettings({ selectedTargets: { provider: "" } }), undefined);
   assert.equal(normalizeUsageSettings({ selectedTargets: { provider: "x".repeat(257) } }), undefined);
   assert.equal(normalizeUsageSettings([]), undefined);
+});
+
+test("fallback label preference defaults on and rejects non-boolean values", () => {
+  assert.equal(normalizeUsageSettings({})?.showOpenaiCodexUsageFallbackLabel, true);
+  assert.equal(normalizeUsageSettings({ showOpenaiCodexUsageFallbackLabel: true })?.showOpenaiCodexUsageFallbackLabel, true);
+  assert.equal(normalizeUsageSettings({ showOpenaiCodexUsageFallbackLabel: false })?.showOpenaiCodexUsageFallbackLabel, false);
+  for (const value of ["false", 0, null, [], {}]) {
+    assert.equal(normalizeUsageSettings({ showOpenaiCodexUsageFallbackLabel: value }), undefined);
+  }
+});
+
+test("fallback pairing writes only versioned hashes through the queued settings runtime", async () => {
+  const path = await tempSettingsPath();
+  const runtime = createUsageSettingsRuntime(path);
+  const pairing = {
+    version: 1 as const,
+    openaiIdentityHash: "a".repeat(64),
+    codexIdentityHash: "b".repeat(64),
+  };
+  await runtime.update({ openaiCodexUsageFallback: true, openaiCodexUsagePairing: pairing });
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
+    openaiCodexUsageFallback: true,
+    openaiCodexUsagePairing: pairing,
+  });
+  await runtime.update({ openaiCodexUsagePairing: undefined });
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { openaiCodexUsageFallback: true });
 });
 
 test("missing loads are side-effect free and valid loads preserve unknown fields", async () => {
@@ -281,7 +341,72 @@ test("normalizes the Codex reset countdown status preference", () => {
   assert.deepEqual(normalizeUsageSettings({ codexStatusResetCountdown: false }), {
     codexFastMode: false,
     codexStatusResetCountdown: false,
+    openaiCodexUsageFallback: false,
+    showOpenaiCodexUsageFallbackLabel: true,
     selectedTargets: {},
   });
   assert.equal(normalizeUsageSettings({ codexStatusResetCountdown: "false" }), undefined);
+});
+
+test("queued pairing publication rejects changed session identity and preserves the prior pairing", async () => {
+  const path = await tempSettingsPath();
+  const pairing = { version: 1 as const, openaiIdentityHash: "a".repeat(64), codexIdentityHash: "b".repeat(64) };
+  await writeFile(path, JSON.stringify({ openaiCodexUsageFallback: true, openaiCodexUsagePairing: pairing, future: "kept" }));
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let writes = 0;
+  let session = "confirmed-session";
+  const runtime = createUsageSettingsRuntime({ path, operations: {
+    writeFile: async (...args) => {
+      if (++writes === 1) { entered(); await blocked; }
+      return writeFile(...args);
+    },
+  } });
+  await runtime.reload();
+  const first = runtime.update({ codexFastMode: true });
+  await started;
+  const replacement = runtime.update({ openaiCodexUsagePairing: { ...pairing, codexIdentityHash: "c".repeat(64) } },
+    undefined, async () => {
+      if (session !== "confirmed-session") throw new Error("session identity changed");
+    });
+  const rejected = assert.rejects(replacement, /session identity changed/u);
+  session = "replacement-session";
+  release();
+  await first;
+  await rejected;
+  assert.deepEqual((await loadUsageSettings(path)).settings.openaiCodexUsagePairing, pairing);
+  assert.deepEqual(runtime.get().settings.openaiCodexUsagePairing, pairing);
+  assert.equal(JSON.parse(await readFile(path, "utf8")).future, "kept");
+  assert.deepEqual((await readdir(join(path, ".."))).filter((name) => name.endsWith(".tmp")), []);
+});
+
+test("pairing publication rechecks after rename and rolls back a changed identity", async () => {
+  const path = await tempSettingsPath();
+  const pairing = { version: 1 as const, openaiIdentityHash: "a".repeat(64), codexIdentityHash: "b".repeat(64) };
+  await writeFile(path, JSON.stringify({ openaiCodexUsageFallback: true, openaiCodexUsagePairing: pairing }));
+  let identity = "confirmed";
+  const runtime = createUsageSettingsRuntime({ path, operations: {
+    rename: async (...args) => { await rename(...args); identity = "changed"; },
+  } });
+  await runtime.reload();
+  await assert.rejects(runtime.update({ openaiCodexUsagePairing: { ...pairing, codexIdentityHash: "c".repeat(64) } },
+    undefined, async () => { if (identity !== "confirmed") throw new Error("identity changed"); }), /identity changed/u);
+  assert.deepEqual(runtime.get().settings.openaiCodexUsagePairing, pairing);
+  assert.deepEqual((await loadUsageSettings(path)).settings.openaiCodexUsagePairing, pairing);
+  assert.deepEqual((await readdir(join(path, ".."))).filter((name) => name.endsWith(".tmp")), []);
+});
+
+test("pairing authorization revision ignores display-only changes and detects explicit replacement", async () => {
+  const runtime = createUsageSettingsRuntime(await tempSettingsPath());
+  await runtime.reload();
+  const revision = runtime.get().fallbackRevision;
+  await runtime.update({ codexStatusResetCountdown: false });
+  assert.equal(runtime.get().fallbackRevision, revision);
+  await runtime.update({ showOpenaiCodexUsageFallbackLabel: false });
+  assert.equal(runtime.get().fallbackRevision, revision);
+  assert.equal((await loadUsageSettings(runtime.get().path)).settings.showOpenaiCodexUsageFallbackLabel, false);
+  await runtime.update({ openaiCodexUsageFallback: false });
+  assert.notEqual(runtime.get().fallbackRevision, revision);
 });

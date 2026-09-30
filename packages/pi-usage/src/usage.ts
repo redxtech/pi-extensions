@@ -1,5 +1,5 @@
-// This orchestrator intentionally remains over 1,000 lines because its menu, query generations,
-// account cache, cancellation, and session lifecycle share one consistency boundary.
+// this orchestrator remains together because its menu, query generations, account cache,
+// cancellation, and session lifecycle share one consistency boundary
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { FAST_USAGE_WARNING, registerCodexFastMode } from "./codex-fast-runtime.ts";
@@ -20,9 +20,13 @@ import {
 } from "./codex-resets.ts";
 import { abortError, awaitWithDeadline, errorMessage, runWithConcurrency, UsageCache } from "./core.ts";
 import { formatProviderStates, formatUsageStatusline } from "./format.ts";
+import { createOpenAICodexUsagePairing, openAICodexUsagePairingMatches,
+  resolveActiveOpenAIFallbackIdentity, resolveOpenAICodexFallback,
+  type OpenAICodexFallbackResolution } from "./openai-codex-fallback.ts";
 import { createOAuthCredentialCandidateReader } from "./oauth-credential-source.ts";
 import {
   adapterForProvider,
+  AUTH_FINGERPRINT_SALT,
   hasOfficialProviderOrigin,
   isStaleExtensionContextError,
   queryProviderUsage,
@@ -73,6 +77,7 @@ type QueryOutcome = {
   fingerprint?: string;
   authState?: "unavailable";
   rememberedTargetId?: string;
+  fallbackGuard?: () => Promise<void>;
 };
 
 class UsageTargetSelectionChangedError extends Error {
@@ -147,8 +152,15 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     statusRefreshTimer.unref?.();
   };
 
-  const publishStatus = (ctx: ExtensionContext, outcome: QueryOutcome, model: PiModel, shouldSchedule: boolean) => {
+  const publishStatus = async (ctx: ExtensionContext, outcome: QueryOutcome, model: PiModel, shouldSchedule: boolean) => {
     clearStatusCountdownTimer();
+    if (outcome.fallbackGuard) {
+      try { await outcome.fallbackGuard(); } catch {
+        invalidateProviderState("openai");
+        clearStatus(ctx);
+        return;
+      }
+    }
     if (adapterForProvider(model.provider)?.publishesStatusline === false) {
       clearStatusRefreshTimer();
       safeSetStatus(ctx, undefined);
@@ -163,6 +175,8 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       const chip =
         outcome.state.status === "auth-unavailable"
           ? "auth unavailable"
+          : outcome.state.status === "pairing-required"
+            ? "codex fallback pairing required"
           : outcome.state.status === "selection-required"
             ? "selection required"
             : `usage err: ${outcome.state.message.slice(0, 50)}`;
@@ -173,9 +187,12 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       return;
     }
     const showCodexResetCountdown =
-      outcome.state.report.providerId === "openai-codex" && settingsRuntime.get().settings.codexStatusResetCountdown;
+      (outcome.state.report.providerId === "openai-codex" || outcome.state.report.fallback !== undefined) && settingsRuntime.get().settings.codexStatusResetCountdown;
     const now = Date.now();
-    const rawValue = formatUsageStatusline(outcome.state.report, model, now, showCodexResetCountdown);
+    const rawValue = formatUsageStatusline(
+      outcome.state.report, model, now, showCodexResetCountdown,
+      settingsRuntime.get().settings.showOpenaiCodexUsageFallbackLabel,
+    );
     const value = rawValue ? fastRuntime.decorateStatus(model, rawValue) : undefined;
     if (!safeSetStatus(ctx, value)) return;
     if (shouldSchedule && sessionActive) scheduleStatusRefresh(ctx, model);
@@ -190,7 +207,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       statusCountdownTimer = setTimeout(() => {
         statusCountdownTimer = undefined;
         if (!sessionActive || generation !== statusGeneration) return;
-        publishStatus(ctx, outcome, model, false);
+        void publishStatus(ctx, outcome, model, false);
       }, STATUS_COUNTDOWN_REFRESH_MS);
       statusCountdownTimer.unref?.();
     }
@@ -495,12 +512,133 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     return { choices, fingerprint: auth.fingerprint };
   };
 
+  const fallbackOptions = { credentialReader, candidateReader: credentialCandidates, salt: AUTH_FINGERPRINT_SALT };
+  const fallbackSettingsKey = () => {
+    const state = settingsRuntime.get();
+    return JSON.stringify([state.kind, state.fallbackRevision, state.settings.openaiCodexUsageFallback,
+      state.settings.openaiCodexUsagePairing]);
+  };
+  const fallbackEnabled = () => {
+    const state = settingsRuntime.get();
+    return state.kind !== "invalid" && state.settings.openaiCodexUsageFallback === true;
+  };
+  const resolveFallback = (ctx: ExtensionContext) => {
+    const model = [...ctx.modelRegistry.getAvailable(), ...ctx.modelRegistry.getAll()]
+      .find((candidate) => candidate.provider === "openai-codex");
+    if (!model) throw new Error("Configure a legacy OpenAI Codex OAuth connection before pairing.");
+    return resolveOpenAICodexFallback(ctx, model, fallbackOptions);
+  };
+  const fallbackBoundary = (ctx: ExtensionContext, signal: AbortSignal) => {
+    const generation = sessionGeneration;
+    const publicationGeneration = statusGeneration;
+    const sessionId = ctx.sessionManager.getSessionId();
+    const model = modelIdentity(ctx.model);
+    const key = fallbackSettingsKey();
+    return () => {
+      if (signal.aborted || generation !== sessionGeneration || publicationGeneration !== statusGeneration ||
+          sessionId !== ctx.sessionManager.getSessionId() || model !== modelIdentity(ctx.model) ||
+          key !== fallbackSettingsKey() || !fallbackEnabled()) throw abortError();
+    };
+  };
+  const fallbackCredentialsMatch = (a: OpenAICodexFallbackResolution, b: OpenAICodexFallbackResolution) =>
+    a.currentCredentialFingerprint === b.currentCredentialFingerprint &&
+    a.openaiAuthFingerprint === b.openaiAuthFingerprint && a.codexAuth.fingerprint === b.codexAuth.fingerprint;
+
+  const queryFallbackState = async (
+    ctx: ExtensionContext, force: boolean, signal: AbortSignal,
+  ): Promise<QueryOutcome> => {
+    const providerName = providerDisplayName(ctx, "openai");
+    const state = (status: "pairing-required" | "auth-unavailable" | "query-failed", message: string): QueryOutcome => ({
+      state: { providerId: "openai", providerName, displayState: "current", status, message },
+    });
+    const boundary = fallbackBoundary(ctx, signal);
+    const publicationBoundary = fallbackBoundary(ctx, new AbortController().signal);
+    const deadlineAt = Date.now() + DEFAULT_TIMEOUT_MS;
+    const resolve = () => awaitWithDeadline(resolveFallback(ctx), signal,
+      Math.max(1, deadlineAt - Date.now()), "resolving Codex fallback authentication");
+    let resolution: OpenAICodexFallbackResolution;
+    try {
+      const active = await awaitWithDeadline(resolveActiveOpenAIFallbackIdentity(ctx, fallbackOptions), signal,
+        DEFAULT_TIMEOUT_MS, "resolving active OpenAI OAuth identity");
+      boundary();
+      const pairing = settingsRuntime.get().settings.openaiCodexUsagePairing;
+      if (!pairing || pairing.openaiIdentityHash !== active.openaiIdentityHash) {
+        invalidateProviderState("openai");
+        transitionCurrentIdentity("openai:pairing-required", "openai");
+        return { ...state("pairing-required", "Confirm the same ChatGPT account and workspace with Pair Codex fallback…"),
+          fallbackGuard: async () => {
+            publicationBoundary();
+            const fresh = await resolveActiveOpenAIFallbackIdentity(ctx, fallbackOptions);
+            publicationBoundary();
+            if (fresh.openaiAuthFingerprint !== active.openaiAuthFingerprint) throw abortError();
+          } };
+      }
+      resolution = await resolve();
+      boundary();
+      if (!openAICodexUsagePairingMatches(pairing, resolution)) {
+        invalidateProviderState("openai");
+        transitionCurrentIdentity("openai:pairing-required", "openai");
+        return { ...state("pairing-required", "The connection identity changed. Re-pair Codex fallback before querying usage."),
+          fallbackGuard: async () => {
+            publicationBoundary();
+            const fresh = await resolveFallback(ctx);
+            publicationBoundary();
+            if (!fallbackCredentialsMatch(resolution, fresh)) throw abortError();
+          } };
+      }
+    } catch (error) {
+      invalidateProviderState("openai");
+      if (isAbortError(error) || isStaleExtensionContextError(error)) throw error;
+      transitionCurrentIdentity("openai:fallback-auth-unavailable", "openai");
+      return { ...state("auth-unavailable", "Codex fallback requires complete, matched OAuth credentials and safe identity hints for both connections."),
+        fallbackGuard: async () => publicationBoundary() };
+    }
+    const guard = async (publication = false) => {
+      const check = publication ? publicationBoundary : boundary;
+      check();
+      const fresh = await awaitWithDeadline(resolveFallback(ctx), publication ? new AbortController().signal : signal, DEFAULT_TIMEOUT_MS,
+        "revalidating Codex fallback authentication");
+      check();
+      if (!fallbackCredentialsMatch(resolution, fresh) ||
+          !openAICodexUsagePairingMatches(settingsRuntime.get().settings.openaiCodexUsagePairing, fresh)) {
+        invalidateProviderState("openai");
+        throw abortError();
+      }
+    };
+    const fingerprint = `codex-fallback:${resolution.currentCredentialFingerprint}:${fallbackSettingsKey()}`;
+    transitionCurrentIdentity(`openai:${fingerprint}`, "openai");
+    try {
+      await guard();
+      let report = !force ? cache.get("openai", fingerprint) : undefined;
+      if (!report) {
+        const codexReport = await queryProviderUsage(adapterForProvider("openai-codex")!, resolution.codexAuth,
+          signal, Math.max(1, deadlineAt - Date.now()), guard);
+        await guard();
+        report = { ...codexReport, providerId: "openai", providerName,
+          fallback: { kind: "openai-codex", sourceProviderId: "openai-codex" },
+          notes: [...(codexReport.notes ?? []),
+            "Codex fallback shows legacy Codex usage. It does not measure this app's cap.",
+            "Pairing is your same-account and workspace assertion. Automatic verification is unavailable."] };
+        cache.set("openai", fingerprint, report);
+      }
+      await guard();
+      return { state: { providerId: "openai", providerName, displayState: "current", status: "ready", report },
+        fingerprint, fallbackGuard: () => guard(true) };
+    } catch (error) {
+      invalidateProviderState("openai");
+      if (isAbortError(error) || isStaleExtensionContextError(error)) throw error;
+      return { ...state("query-failed", "Codex fallback could not validate authentication or the usage response. Refresh to retry."),
+        fallbackGuard: async () => publicationBoundary() };
+    }
+  };
+
   const queryCurrentState = async (
     ctx: ExtensionContext,
     model: PiModel | undefined,
     force: boolean,
     signal: AbortSignal,
   ): Promise<QueryOutcome> => {
+    if (model?.provider === "openai" && fallbackEnabled()) return queryFallbackState(ctx, force, signal);
     const adapter = adapterForProvider(model?.provider);
     if (!adapter) {
       const providerId = model?.provider ?? "none";
@@ -522,13 +660,13 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
 
   const refreshCurrentStatus = async (ctx: ExtensionContext, model: PiModel | undefined, force: boolean) => {
     const adapter = adapterForProvider(model?.provider);
-    if (!adapter || !model) {
+    if ((!adapter && !(model?.provider === "openai" && fallbackEnabled())) || !model) {
       const providerId = model?.provider ?? "none";
       transitionCurrentIdentity(`unsupported:${providerId}`, providerId);
       clearStatus(ctx);
       return;
     }
-    if (adapter.publishesStatusline === false) {
+    if (adapter?.publishesStatusline === false) {
       clearStatus(ctx);
       return;
     }
@@ -544,13 +682,18 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       const outcome = await queryCurrentState(ctx, model, force, controller.signal);
       if (!sessionActive || generation !== statusGeneration || controller.signal.aborted) return;
       if (!(await outcomeStillCurrent(ctx, model, generation, outcome, controller.signal))) {
-        if (sessionActive && generation === statusGeneration) {
+        safeSetStatus(ctx, undefined);
+        if (!outcome.fallbackGuard && sessionActive && generation === statusGeneration) {
           queueMicrotask(() => startStatusRefresh(ctx, ctx.model, false));
         }
         return;
       }
-      publishStatus(ctx, outcome, model, true);
+      await publishStatus(ctx, outcome, model, true);
+    } catch (error) {
+      if (generation === statusGeneration && isAbortError(error)) safeSetStatus(ctx, undefined);
+      throw error;
     } finally {
+      if (controller.signal.aborted && generation === statusGeneration) safeSetStatus(ctx, undefined);
       activeControllers.delete(controller);
       if (statusController === controller) statusController = undefined;
     }
@@ -601,6 +744,14 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
   ): Promise<boolean> => {
     if (generation !== statusGeneration || modelIdentity(ctx.model) !== modelIdentity(model)) {
       return false;
+    }
+    if (outcome.fallbackGuard) {
+      try { await outcome.fallbackGuard(); return true; } catch (error) {
+        if (isStaleExtensionContextError(error)) throw error;
+        invalidateProviderState("openai");
+        safeSetStatus(ctx, undefined);
+        return false;
+      }
     }
     const adapter = adapterForProvider(model?.provider);
     const selectionStillCurrent =
@@ -673,8 +824,8 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     return undefined;
   };
 
-  const publishStableCurrent = (ctx: ExtensionCommandContext, current: StableCurrent) => {
-    if (current.model) publishStatus(ctx, current.outcome, current.model, sessionActive);
+  const publishStableCurrent = async (ctx: ExtensionCommandContext, current: StableCurrent) => {
+    if (current.model) await publishStatus(ctx, current.outcome, current.model, sessionActive);
     else safeSetStatus(ctx, undefined);
   };
 
@@ -690,7 +841,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     try {
       let stableCurrent = await queryStableCurrent(ctx, false, controller, "Checking current usage…");
       if (!stableCurrent) return;
-      publishStableCurrent(ctx, stableCurrent);
+      await publishStableCurrent(ctx, stableCurrent);
       let current = stableCurrent.outcome;
       let visibleStates: ProviderUsageState[] = [current.state];
       let fastState = settingsRuntime.get();
@@ -809,6 +960,8 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       if (controller.signal.aborted || statusGeneration !== menuGeneration) return;
       type Screen = "main" | "providers" | "reset-picker" | "reset-confirm" | "reset-result" | "reset-error";
       type Action =
+        | "pair-fallback"
+        | "remove-pairing"
         | "refresh"
         | "settings"
         | "target"
@@ -838,10 +991,20 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
             return {
               kind: "actions",
               title: "Provider usage",
-              lines: [...formatProviderStates(visibleStates).split("\n"), ...fastLines],
+              lines: [...formatProviderStates(
+                visibleStates, settingsRuntime.get().settings.showOpenaiCodexUsageFallbackLabel,
+              ).split("\n"), ...fastLines],
               items: [
                 { id: "refresh", label: REFRESH_CURRENT, action: "refresh" },
                 { id: "settings", label: SETTINGS, action: "settings" },
+                ...(ctx.model?.provider === "openai" && fallbackEnabled() &&
+                    (current.state.status === "pairing-required" || current.state.status === "ready")
+                  ? [{ id: "pair-fallback", label: settingsRuntime.get().settings.openaiCodexUsagePairing
+                      ? "Re-pair Codex fallback…" : "Pair Codex fallback…", action: "pair-fallback" as const }]
+                  : []),
+                ...(ctx.model?.provider === "openai" && fallbackEnabled() && settingsRuntime.get().settings.openaiCodexUsagePairing
+                  ? [{ id: "remove-pairing", label: "Remove Codex fallback pairing", action: "remove-pairing" as const }]
+                  : []),
                 ...(targetState && targetAdapter?.targets
                   ? [
                       {
@@ -955,6 +1118,56 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
           }),
         },
         actions: {
+          "pair-fallback": async () => {
+            const boundary = fallbackBoundary(ctx, controller.signal);
+            try {
+              boundary();
+              const initial = await resolveFallback(ctx);
+              boundary();
+              const accepted = await ctx.ui.confirm("Pair Codex fallback?",
+                "Confirm that both connections use the same ChatGPT account and workspace. " +
+                "Automatic verification is unavailable. Legacy Codex usage does not measure this app's cap. " +
+                "This confirmation replaces any prior pairing.", { signal: controller.signal });
+              if (!accepted) return { kind: "stay" };
+              boundary();
+              const fresh = await resolveFallback(ctx);
+              boundary();
+              if (!fallbackCredentialsMatch(initial, fresh)) throw abortError();
+              await settingsRuntime.update({ openaiCodexUsagePairing: createOpenAICodexUsagePairing(
+                fresh.openaiIdentityHash, fresh.codexIdentityHash) }, controller.signal, async () => {
+                boundary();
+                const published = await resolveFallback(ctx);
+                boundary();
+                if (!fallbackCredentialsMatch(fresh, published)) throw abortError();
+              });
+              invalidateProviderState("openai");
+              const refreshed = await queryStableCurrent(ctx, true, controller, "Checking Codex fallback usage…");
+              if (!refreshed) return { kind: "stay" };
+              stableCurrent = refreshed;
+              current = refreshed.outcome;
+              visibleStates = [current.state];
+              await publishStableCurrent(ctx, refreshed);
+            } catch (error) {
+              invalidateProviderState("openai");
+              safeSetStatus(ctx, undefined);
+              if (!controller.signal.aborted && statusGeneration === menuGeneration) {
+                ctx.ui.notify("Codex fallback pairing was not authorized. Check both OAuth connections and try again.", "warning");
+              }
+            }
+            return { kind: "stay" };
+          },
+          "remove-pairing": async () => {
+            await settingsRuntime.update({ openaiCodexUsagePairing: undefined }, controller.signal);
+            invalidateProviderState("openai");
+            safeSetStatus(ctx, undefined);
+            const refreshed = await queryStableCurrent(ctx, false, controller, "Checking current usage…");
+            if (!refreshed) return { kind: "stay" };
+            stableCurrent = refreshed;
+            current = refreshed.outcome;
+            visibleStates = [current.state];
+            await publishStableCurrent(ctx, refreshed);
+            return { kind: "stay" };
+          },
           target: async () => {
             const targetState = actionableTargetState();
             if (!targetState) return { kind: "rejected" };
@@ -976,7 +1189,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
                 stableCurrent = refreshed;
                 current = refreshed.outcome;
                 visibleStates = [current.state];
-                publishStableCurrent(ctx, refreshed);
+                await publishStableCurrent(ctx, refreshed);
                 return { kind: "stay" };
               }
               const outcome = await runMenuOperation(
@@ -1011,13 +1224,17 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
               controller.signal,
               () => statusGeneration === menuGeneration && !controller.signal.aborted,
               (id) => {
+                if (id === "openaiCodexUsageFallback") {
+                  invalidateProviderState("openai");
+                  safeSetStatus(ctx, undefined);
+                }
                 if (
                   id === "codexStatusResetCountdown" &&
                   stableCurrent &&
                   statusGeneration === menuGeneration &&
                   !controller.signal.aborted
                 ) {
-                  publishStableCurrent(ctx, stableCurrent);
+                  void publishStableCurrent(ctx, stableCurrent);
                 }
               },
             );
@@ -1027,7 +1244,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
             stableCurrent = revalidated;
             current = revalidated.outcome;
             visibleStates = [current.state];
-            publishStableCurrent(ctx, revalidated);
+            await publishStableCurrent(ctx, revalidated);
             return { kind: "stay" };
           },
           "toggle-fast": async () => {
@@ -1153,7 +1370,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
                 stableCurrent = { outcome: result.refreshed, model: result.model };
                 current = result.refreshed;
                 visibleStates = [current.state];
-                publishStableCurrent(ctx, stableCurrent);
+                await publishStableCurrent(ctx, stableCurrent);
               }
               return { kind: "to", screen: "reset-result" };
             } catch (error) {
@@ -1174,7 +1391,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
             const refreshed = await queryStableCurrent(ctx, true, controller, "Refreshing current usage…");
             if (!refreshed) return { kind: "stay" };
             stableCurrent = refreshed;
-            publishStableCurrent(ctx, refreshed);
+            await publishStableCurrent(ctx, refreshed);
             current = refreshed.outcome;
             visibleStates = [current.state];
             return { kind: "stay" };
@@ -1271,7 +1488,25 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         },
       });
       await runMenu(ctx, menu, {
-        getState: () => undefined,
+        getState: async () => {
+          if (current.fallbackGuard) {
+            try { await current.fallbackGuard(); } catch {
+              invalidateProviderState("openai");
+              safeSetStatus(ctx, undefined);
+              const refreshed = await queryStableCurrent(ctx, false, controller, "Revalidating Codex fallback…");
+              if (refreshed) {
+                stableCurrent = refreshed;
+                current = refreshed.outcome;
+                visibleStates = [current.state];
+                await publishStableCurrent(ctx, refreshed);
+              } else {
+                visibleStates = [{ providerId: "openai", providerName: "OpenAI", displayState: "current",
+                  status: "auth-unavailable", message: "Codex fallback authorization changed. Reopen /usage to retry." }];
+              }
+            }
+          }
+          return undefined;
+        },
         signal: controller.signal,
         isCurrent: () => statusGeneration === menuGeneration && !controller.signal.aborted,
       });
@@ -1303,6 +1538,9 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     for (const controller of activeControllers) controller.abort();
     activeControllers.clear();
     statusController = undefined;
+    cache.clear();
+    activeCurrentIdentity = undefined;
+    safeSetStatus(ctx, undefined);
     sessionActive = true;
     const ownerGeneration = sessionGeneration;
     try {

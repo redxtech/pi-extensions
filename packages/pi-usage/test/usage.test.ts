@@ -131,6 +131,8 @@ function memorySettingsRuntime(
     settings: {
       codexFastMode: false,
       codexStatusResetCountdown: options.codexStatusResetCountdown ?? false,
+      openaiCodexUsageFallback: false,
+      showOpenaiCodexUsageFallbackLabel: true,
       selectedTargets: {
         ...(options.fireworksAccountId ? { fireworks: options.fireworksAccountId } : {}),
         ...options.selectedTargets,
@@ -2853,6 +2855,8 @@ test("Ctrl+C hard-cancels Settings before conflicting configurable actions", asy
   assert.deepEqual(settings.state().settings, {
     codexFastMode: false,
     codexStatusResetCountdown: false,
+    openaiCodexUsageFallback: false,
+    showOpenaiCodexUsageFallbackLabel: true,
     selectedTargets: {},
   });
   assert.equal(applied, 0);

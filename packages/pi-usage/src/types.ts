@@ -45,9 +45,11 @@ export interface UsageReport {
   buckets: UsageBucket[];
   metrics: UsageMetric[];
   notes?: string[];
+  fallback?: { kind: "openai-codex"; sourceProviderId: "openai-codex" };
 }
 
 export interface ResolvedUsageAuth {
+  usageKind?: "openai-codex-fallback";
   apiKey?: string;
   headers: Record<string, string>;
   fingerprint: string;
@@ -124,7 +126,7 @@ export type ProviderUsageState =
       providerId: string;
       providerName: string;
       displayState: UsageDisplayState;
-      status: "unsupported" | "auth-unavailable" | "query-failed";
+      status: "unsupported" | "auth-unavailable" | "query-failed" | "pairing-required";
       message: string;
     };
 

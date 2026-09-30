@@ -7,7 +7,7 @@ import type { UsageSettingsRuntime } from "./settings.ts";
 const OFF = "Off";
 const ON = "On";
 
-type UsageSettingId = "codexFastMode" | "codexStatusResetCountdown";
+type UsageSettingId = "codexFastMode" | "codexStatusResetCountdown" | "openaiCodexUsageFallback";
 
 export async function showUsageSettings(
   ctx: ExtensionCommandContext,
@@ -43,6 +43,13 @@ export async function showUsageSettings(
           label: "Codex reset countdown",
           description: "Show time remaining until each Codex usage limit resets.",
           currentValue: state.settings.codexStatusResetCountdown ? ON : OFF,
+          values: [OFF, ON],
+        },
+        {
+          id: "openaiCodexUsageFallback",
+          label: "OpenAI Codex usage fallback",
+          description: "Use legacy Codex usage after explicit account pairing in /usage. This does not measure this app’s cap.",
+          currentValue: state.settings.openaiCodexUsageFallback ? ON : OFF,
           values: [OFF, ON],
         },
       ];

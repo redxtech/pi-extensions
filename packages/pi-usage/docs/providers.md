@@ -21,6 +21,34 @@ The README contains the capability overview and shared security requirements.
 
 ## 📋 Provider semantics
 
+### OpenAI subscription with Codex fallback
+
+- Active provider ID: `openai`
+- Required auth: subscription OAuth with `chatgpt.tokens.use.direct`, matched to a complete credential candidate
+- Default: disabled through `openaiCodexUsageFallback: false`
+- Authorization: explicit same-ChatGPT-account and workspace assertion through `/usage`, not automatic verification
+- Usage source: the configured legacy `openai-codex` OAuth connection at `https://chatgpt.com/backend-api/wham/usage`
+- Display: **Codex fallback** by default. `showOpenaiCodexUsageFallbackLabel: false` hides `fallback` in the usage title and statusline, but retains the app-cap warning
+- Mutations: no Fast mode or reset redemption for the active `openai` model
+
+Both direct and configured HTTP/HTTPS proxy inference models can use this workaround.
+The selected-model runtime auth URL must agree with its configured model URL.
+A model override can differ from the provider URL.
+No usage request goes to a proxy URL, and no proxy headers reach ChatGPT.
+The request sends only Bearer authorization and the matched `chatgpt-account-id`, refuses redirects, and validates the response `account_id`.
+HTTP inference itself remains outside this usage-request protection.
+
+Pairing persists only versioned SHA-256 identity hashes in `pi-usage.json`.
+The hashes use the new OAuth issuer, subject, and client ID, and the legacy OAuth issuer, subject, and account ID.
+They survive ordinary token refresh but require a new confirmation after an identity change.
+The hashes do not establish that the connections use the same account.
+Decoded claims are local hints on each matched runtime credential, not cross-provider verification.
+
+The extension revalidates current runtime credentials before the request and after asynchronous work, including before publication.
+Changed credentials, opt-out, pairing removal or replacement, and session or model replacement invalidate stale output.
+Until opt-in and pairing, automatic refresh never resolves legacy auth or requests legacy usage.
+See [the fallback setup procedure](../README.md#openai-codex-usage-fallback) for confirmation and removal.
+
 ### OpenAI Codex
 
 - Provider ID: `openai-codex`

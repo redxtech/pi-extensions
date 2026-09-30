@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { type ExtensionContext, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { codexAccountIdFromAccessToken, validCodexAccountId } from "./codex-account.ts";
 import { errorMessage, fingerprintResolvedAuth, redactUsageError } from "./core.ts";
+import { OPENAI_CODEX_USAGE_FALLBACK_URL } from "./openai-codex-fallback.ts";
 import { fallbackOAuthCredentialCandidates, type OAuthCredentialCandidateReader } from "./oauth-credential-source.ts";
 import { normalizeBasetenBillingUsagePayload } from "./providers/baseten.ts";
 import { normalizeCodexBackendPayload } from "./providers/codex.ts";
@@ -46,7 +47,7 @@ import { resolveUsageTarget } from "./usage-targets.ts";
 
 const BASETEN_BILLING_USAGE_URL = "https://api.baseten.co/v1/billing/usage_summary";
 const BASETEN_USAGE_WINDOW_DAYS = 30;
-const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_USAGE_URL = OPENAI_CODEX_USAGE_FALLBACK_URL;
 const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 const GITHUB_COPILOT_USAGE_URL = "https://api.github.com/copilot_internal/user";
 const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key";
@@ -104,15 +105,23 @@ export const SUPPORTED_ADAPTERS: readonly UsageProviderAdapter[] = [
       label: "ChatGPT subscription limits",
     },
     async query(auth, signal, timeoutMs, guard) {
+      if (auth.usageKind === "openai-codex-fallback" && !guard) {
+        throw new Error("Codex fallback requires request-boundary revalidation.");
+      }
       const startedAt = Date.now();
       if (guard) await guard();
       const payload = await fetchProviderJson(
         CODEX_USAGE_URL,
-        auth,
+        auth.usageKind === "openai-codex-fallback"
+          ? { ...auth, headers: {
+              Authorization: auth.headers.Authorization,
+              "chatgpt-account-id": auth.headers["chatgpt-account-id"],
+            } }
+          : auth,
         signal,
         guard ? remainingTimeout(timeoutMs, startedAt, "querying Codex usage") : timeoutMs,
         "Codex usage endpoint",
-        { redirect: "error" },
+        { redirect: "error", userAgent: auth.usageKind !== "openai-codex-fallback" },
       );
       if (guard) await guard();
       const accountId = validCodexAccountId(auth.headers["chatgpt-account-id"]);

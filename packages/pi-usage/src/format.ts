@@ -3,10 +3,16 @@ import type { ProviderUsageState, UsageBucket, UsageDisplayState, UsageModel, Us
 const BAR_SEGMENTS = 20;
 const VALUE_COLUMN = 29;
 
-export function formatUsageReport(report: UsageReport, displayState: UsageDisplayState): string {
+export function formatUsageReport(
+  report: UsageReport,
+  displayState: UsageDisplayState,
+  showFallbackLabel = true,
+): string {
   const stateLabel = displayState === "current" ? "Current" : "Configured";
   const title =
-    report.providerId === "baseten"
+    report.fallback?.kind === "openai-codex"
+      ? `OpenAI · Codex${showFallbackLabel ? " fallback" : ""} usage`
+      : report.providerId === "baseten"
       ? "Baseten Model APIs Spend"
       : report.providerId === "deepseek"
         ? "DeepSeek API Balance"
@@ -26,7 +32,7 @@ export function formatUsageReport(report: UsageReport, displayState: UsageDispla
   lines.push(`Semantics: ${report.semantics.label}`, "");
 
   if (report.providerId === "baseten") formatBasetenReport(lines, report);
-  else if (report.providerId === "openai-codex") formatCodexReport(lines, report);
+  else if (report.providerId === "openai-codex" || report.fallback?.kind === "openai-codex") formatCodexReport(lines, report);
   else if (report.providerId === "deepseek") formatDeepSeekReport(lines, report);
   else if (report.providerId === "fireworks") formatFireworksReport(lines, report);
   else if (report.providerId === "vercel-ai-gateway") formatVercelAIGatewayReport(lines, report);
@@ -54,7 +60,12 @@ export function formatUsageStatusline(
   model?: UsageModel,
   now = Date.now(),
   showCodexResetCountdown = true,
+  showFallbackLabel = true,
 ): string | undefined {
+  if (report.fallback?.kind === "openai-codex") {
+    const status = formatCodexStatusline(report, model, now, showCodexResetCountdown);
+    return showFallbackLabel ? status?.replace(/^codex/u, "codex fallback") : status;
+  }
   if (report.providerId === "baseten") return formatBasetenStatusline(report);
   if (report.providerId === "openai-codex") {
     return formatCodexStatusline(report, model, now, showCodexResetCountdown);
@@ -83,16 +94,18 @@ export function formatUsageStatusline(
   return undefined;
 }
 
-export function formatProviderStates(states: readonly ProviderUsageState[]): string {
+export function formatProviderStates(states: readonly ProviderUsageState[], showFallbackLabel = true): string {
   return states
     .map((state) => {
-      if (state.status === "ready") return formatUsageReport(state.report, state.displayState);
+      if (state.status === "ready") return formatUsageReport(state.report, state.displayState, showFallbackLabel);
       const label = state.displayState === "current" ? "Current" : "Configured";
       if (state.status === "selection-required") {
         return `${state.providerName} · ${label}\nSelection required: choose this provider's ${state.singularLabel} by viewing it individually.`;
       }
       const status =
-        state.status === "auth-unavailable"
+        state.status === "pairing-required"
+          ? "Codex fallback pairing required"
+          : state.status === "auth-unavailable"
           ? "Authentication unavailable"
           : state.status === "unsupported"
             ? "Unsupported"
@@ -553,7 +566,7 @@ function formatCodexCreditsStatus(report: UsageReport): string {
 
 function selectCodexGroup(report: UsageReport, model?: UsageModel): string | undefined {
   const groups = [...new Set(report.buckets.map((bucket) => bucket.groupId ?? bucket.id))];
-  if (model?.provider !== "openai-codex") {
+  if (model?.provider !== "openai-codex" && !(report.fallback && model?.provider === "openai")) {
     return groups.includes("codex") ? "codex" : groups[0];
   }
   const modelKeys = normalizedModelKeys(model);
@@ -584,6 +597,8 @@ function normalizedModelKeys(model: UsageModel): Set<string> {
     const key = normalizeKey(value);
     if (!key) continue;
     keys.add(key);
+    const leaf = normalizeKey(value.split("/").at(-1));
+    if (leaf) keys.add(leaf);
     const index = key.indexOf("codex");
     if (index >= 0) keys.add(key.slice(index));
   }

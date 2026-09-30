@@ -9,19 +9,31 @@ import { isBoundedTargetId } from "./usage-targets.ts";
 export const USAGE_SETTINGS_FILE = "pi-usage.json";
 export const MAX_USAGE_SETTINGS_BYTES = 64 * 1024;
 
+export interface OpenAICodexUsagePairing {
+  version: 1;
+  openaiIdentityHash: string;
+  codexIdentityHash: string;
+}
+
 export interface UsageSettings {
   codexFastMode: boolean;
   codexStatusResetCountdown: boolean;
+  openaiCodexUsageFallback: boolean;
+  showOpenaiCodexUsageFallbackLabel: boolean;
+  openaiCodexUsagePairing?: OpenAICodexUsagePairing;
   selectedTargets: Record<string, string>;
 }
 
 export const DEFAULT_USAGE_SETTINGS: Readonly<UsageSettings> = Object.freeze({
   codexFastMode: false,
   codexStatusResetCountdown: true,
+  openaiCodexUsageFallback: false,
+  showOpenaiCodexUsageFallbackLabel: true,
   selectedTargets: Object.freeze({}),
 });
 
 export interface UsageSettingsState {
+  fallbackRevision?: number;
   kind: "missing" | "loaded" | "invalid";
   path: string;
   settings: UsageSettings;
@@ -31,10 +43,12 @@ export interface UsageSettingsState {
 
 export type UsageTargetPublicationCheck = () => Promise<void>;
 
+export type UsageSettingsPublicationCheck = () => void | Promise<void>;
+
 export interface UsageSettingsRuntime {
   get(): Readonly<UsageSettingsState>;
   reload(signal?: AbortSignal): Promise<Readonly<UsageSettingsState>>;
-  update(patch: Partial<UsageSettings>, signal?: AbortSignal): Promise<Readonly<UsageSettingsState>>;
+  update(patch: Partial<UsageSettings>, signal?: AbortSignal, beforePublish?: UsageSettingsPublicationCheck): Promise<Readonly<UsageSettingsState>>;
   updateSelectedTarget(
     providerId: string,
     targetId: string,
@@ -66,6 +80,14 @@ export function normalizeUsageSettings(value: unknown): UsageSettings | undefine
   if (Object.hasOwn(value, "codexStatusResetCountdown") && typeof value.codexStatusResetCountdown !== "boolean") {
     return undefined;
   }
+  if (Object.hasOwn(value, "openaiCodexUsageFallback") && typeof value.openaiCodexUsageFallback !== "boolean") {
+    return undefined;
+  }
+  if (Object.hasOwn(value, "showOpenaiCodexUsageFallbackLabel") && typeof value.showOpenaiCodexUsageFallbackLabel !== "boolean") {
+    return undefined;
+  }
+  const openaiCodexUsagePairing = normalizeOpenAICodexUsagePairing(value.openaiCodexUsagePairing);
+  if (Object.hasOwn(value, "openaiCodexUsagePairing") && !openaiCodexUsagePairing) return undefined;
   if (Object.hasOwn(value, "fireworksAccountId") && !isFireworksAccountId(value.fireworksAccountId)) {
     return undefined;
   }
@@ -82,6 +104,15 @@ export function normalizeUsageSettings(value: unknown): UsageSettings | undefine
       typeof value.codexStatusResetCountdown === "boolean"
         ? value.codexStatusResetCountdown
         : DEFAULT_USAGE_SETTINGS.codexStatusResetCountdown,
+    openaiCodexUsageFallback:
+      typeof value.openaiCodexUsageFallback === "boolean"
+        ? value.openaiCodexUsageFallback
+        : DEFAULT_USAGE_SETTINGS.openaiCodexUsageFallback,
+    showOpenaiCodexUsageFallbackLabel:
+      typeof value.showOpenaiCodexUsageFallbackLabel === "boolean"
+        ? value.showOpenaiCodexUsageFallbackLabel
+        : DEFAULT_USAGE_SETTINGS.showOpenaiCodexUsageFallbackLabel,
+    ...(openaiCodexUsagePairing ? { openaiCodexUsagePairing } : {}),
     selectedTargets: effectiveTargets,
   };
 }
@@ -144,6 +175,7 @@ export function createUsageSettingsRuntime(options: UsageSettingsRuntimeOptions 
     settings: { ...DEFAULT_USAGE_SETTINGS },
     document: {},
   };
+  let revision = 0;
   let queue = Promise.resolve();
   const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = queue.then(operation, operation);
@@ -154,17 +186,35 @@ export function createUsageSettingsRuntime(options: UsageSettingsRuntimeOptions 
     return result;
   };
   return {
-    get: () => structuredClone(state),
+    get: () => ({ ...structuredClone(state), fallbackRevision: revision }),
     reload: (signal) =>
       enqueue(async () => {
         const loaded = await loadUsageSettings(path, signal);
         state = loaded;
+        revision += 1;
         return structuredClone(state);
       }),
-    update: (patch, signal) =>
+    update: (patch, signal, beforePublish) =>
       enqueue(async () => {
-        const saved = await saveUsageSettingsPatch(path, patch, operations, signal);
+        const previous = await loadUsageSettings(path, signal);
+        const saved = await saveUsageSettingsPatch(path, patch, operations, signal, beforePublish, previous);
+        try {
+          await beforePublish?.();
+          throwIfAborted(signal);
+        } catch (error) {
+          try {
+            await restoreUsageSettingsState(path, saved, previous, operations);
+            state = previous;
+          } catch (rollbackError) {
+            state = await loadUsageSettings(path);
+            throw new AggregateError([error, rollbackError], "Pairing authorization changed and pi-usage.json rollback failed");
+          }
+          throw error;
+        }
         state = saved;
+        if (Object.hasOwn(patch, "openaiCodexUsageFallback") || Object.hasOwn(patch, "openaiCodexUsagePairing")) {
+          revision += 1;
+        }
         return structuredClone(state);
       }),
     updateSelectedTarget: (providerId, targetId, signal, checkPublishedSelection) =>
@@ -198,6 +248,8 @@ async function saveUsageSettingsPatch(
   patch: Partial<UsageSettings>,
   operations: UsageSettingsFileOperations,
   signal?: AbortSignal,
+  beforePublish?: UsageSettingsPublicationCheck,
+  expected?: UsageSettingsState,
 ): Promise<UsageSettingsState> {
   return saveUsageSettingsDocument(
     path,
@@ -209,6 +261,8 @@ async function saveUsageSettingsPatch(
     },
     operations,
     signal,
+    expected,
+    beforePublish,
   );
 }
 
@@ -245,6 +299,7 @@ async function saveUsageSettingsDocument(
   operations: UsageSettingsFileOperations,
   signal?: AbortSignal,
   expected?: UsageSettingsState,
+  beforePublish?: UsageSettingsPublicationCheck,
 ): Promise<UsageSettingsState> {
   const latest = await loadUsageSettings(path, signal);
   if (latest.kind === "invalid") {
@@ -268,6 +323,8 @@ async function saveUsageSettingsDocument(
       mode: 0o600,
     });
     if (process.platform !== "win32") await chmodPrivate(temporaryPath);
+    throwIfAborted(signal);
+    await beforePublish?.();
     throwIfAborted(signal);
     const current = await loadUsageSettings(path, signal);
     if (
@@ -335,6 +392,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function normalizeOpenAICodexUsagePairing(value: unknown): OpenAICodexUsagePairing | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = Object.keys(value).sort();
+  if (
+    keys.length !== 3 ||
+    keys[0] !== "codexIdentityHash" ||
+    keys[1] !== "openaiIdentityHash" ||
+    keys[2] !== "version" ||
+    value.version !== 1 ||
+    !isPairingHash(value.openaiIdentityHash) ||
+    !isPairingHash(value.codexIdentityHash)
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    openaiIdentityHash: value.openaiIdentityHash,
+    codexIdentityHash: value.codexIdentityHash,
+  };
+}
+
+function isPairingHash(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
 }
 
 function normalizeSelectedTargets(value: unknown): Record<string, string> | undefined {
