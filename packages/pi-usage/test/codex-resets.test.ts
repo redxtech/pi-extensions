@@ -250,8 +250,10 @@ test("Codex reset requests use exact ChatGPT paths, account headers, and payload
 
   assert.equal(requests[0]?.url, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits");
   assert.equal(requests[0]?.init?.method, "GET");
+  assert.equal(requests[0]?.init?.redirect, "error");
   assert.equal(requests[1]?.url, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume");
   assert.equal(requests[1]?.init?.method, "POST");
+  assert.equal(requests[1]?.init?.redirect, "error");
   assert.deepEqual(JSON.parse(String(requests[1]?.init?.body)), {
     redeem_request_id: "redeem-123",
     credit_id: "credit-123",
@@ -260,6 +262,26 @@ test("Codex reset requests use exact ChatGPT paths, account headers, and payload
   assert.equal(headers.get("authorization"), "Bearer active-token");
   assert.equal(headers.get("chatgpt-account-id"), "account-123");
   assert.equal(headers.get("content-type"), "application/json");
+});
+
+test("Codex reset requests reject redirects without following credentials", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let followed = 0;
+  globalThis.fetch = async (_input, init) => {
+    if (init?.redirect === "error") throw new TypeError("redirect blocked");
+    followed += 1;
+    return new Response(JSON.stringify({ available_count: 0, code: "reset" }), { status: 200 });
+  };
+  const signal = new AbortController().signal;
+  await assert.rejects(() => listCodexResetCredits(resolvedAuth(), signal, 1_000), /redirect blocked/iu);
+  await assert.rejects(
+    () => consumeCodexResetCredit(resolvedAuth(), { title: "Full reset", description: "Reset limits" }, "redeem-123", signal, 1_000),
+    /redirect blocked/iu,
+  );
+  assert.equal(followed, 0);
 });
 
 test("Codex reset consume recognizes every backend outcome and rejects unknown values", async (t) => {

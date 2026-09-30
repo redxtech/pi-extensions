@@ -2,6 +2,7 @@
 // separating that security boundary would duplicate request and redaction policy across providers.
 import { randomBytes } from "node:crypto";
 import { type ExtensionContext, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { codexAccountIdFromAccessToken, validCodexAccountId } from "./codex-account.ts";
 import { errorMessage, fingerprintResolvedAuth, redactUsageError } from "./core.ts";
 import { fallbackOAuthCredentialCandidates, type OAuthCredentialCandidateReader } from "./oauth-credential-source.ts";
 import { normalizeBasetenBillingUsagePayload } from "./providers/baseten.ts";
@@ -111,8 +112,13 @@ export const SUPPORTED_ADAPTERS: readonly UsageProviderAdapter[] = [
         signal,
         guard ? remainingTimeout(timeoutMs, startedAt, "querying Codex usage") : timeoutMs,
         "Codex usage endpoint",
+        { redirect: "error" },
       );
       if (guard) await guard();
+      const accountId = validCodexAccountId(auth.headers["chatgpt-account-id"]);
+      if (!accountId || payload.account_id !== accountId) {
+        throw new Error("Codex usage response does not match the active OAuth account.");
+      }
       return normalizeCodexBackendPayload(payload as CodexBackendPayload, Date.now());
     },
   },
@@ -345,10 +351,12 @@ export async function resolveReadOnlyUsageAuth(
   candidateReader?: OAuthCredentialCandidateReader,
 ): Promise<ResolvedUsageAuth | undefined> {
   const model = ctx.model;
-  if (adapter.id !== "openai-codex" || model?.provider !== adapter.id || hasOfficialProviderOrigin(model, adapter.id)) {
-    return resolveUsageAuth(ctx, adapter, salt, credentialReader, candidateReader);
-  }
-  return resolveProxiedCodexUsageAuth(ctx, model, salt, credentialReader, candidateReader);
+  const auth =
+    adapter.id === "openai-codex" && model?.provider === adapter.id && !hasOfficialProviderOrigin(model, adapter.id)
+      ? await resolveProxiedCodexUsageAuth(ctx, model, salt)
+      : await resolveUsageAuth(ctx, adapter, salt, credentialReader, candidateReader);
+  if (adapter.id !== "openai-codex" || !auth) return auth;
+  return bindCodexUsageAccount(ctx, auth, salt, credentialReader, candidateReader);
 }
 
 export async function resolveUsageAuth(
@@ -898,8 +906,6 @@ async function resolveProxiedCodexUsageAuth(
   ctx: ExtensionContext,
   model: PiModel,
   salt: Uint8Array,
-  credentialReader: StoredCredentialReader,
-  candidateReader: OAuthCredentialCandidateReader | undefined,
 ): Promise<ResolvedUsageAuth> {
   const registry = ctx.modelRegistry as unknown as UsageAuthRegistry;
   if (typeof registry.getApiKeyAndHeaders !== "function") {
@@ -910,58 +916,14 @@ async function resolveProxiedCodexUsageAuth(
   const resolvedAccess = bearerToken(authorizationFrom(result));
   if (!resolvedAccess) throw new Error("Proxied OpenAI Codex usage requires Bearer authentication.");
 
-  const offered = candidateReader
-    ? candidateReader(ctx, "openai-codex")
-    : fallbackOAuthCredentialCandidates("openai-codex", credentialReader);
-  if (!offered.ok) throw new Error("OpenAI Codex OAuth credential discovery failed closed.");
-  let sawOAuth = false;
-  let sawMatchingAccess = false;
-  let sawIncompleteMatch = false;
-  const matches = new Map<string, { access: string; refresh: string }>();
-  for (const candidate of offered.candidates) {
-    const credential = asObject(candidate);
-    if (credential?.type !== "oauth") continue;
-    sawOAuth = true;
-    if (credential.access !== resolvedAccess) continue;
-    sawMatchingAccess = true;
-    if (
-      typeof credential.access !== "string" ||
-      !credential.access ||
-      typeof credential.refresh !== "string" ||
-      !credential.refresh ||
-      typeof credential.expires !== "number" ||
-      !Number.isFinite(credential.expires)
-    ) {
-      sawIncompleteMatch = true;
-      continue;
-    }
-    matches.set(credential.refresh, { access: credential.access, refresh: credential.refresh });
-  }
-  if (sawIncompleteMatch) throw new Error("The matching OpenAI Codex OAuth credential was incomplete.");
-  if (matches.size > 1) {
-    throw new Error("Conflicting OAuth credentials match the active proxied OpenAI Codex account.");
-  }
-  const match = matches.values().next().value;
-  if (!match) {
-    if (!sawOAuth) {
-      throw new Error("Proxied OpenAI Codex usage requires the OAuth account configured through Pi /login.");
-    }
-    if (sawMatchingAccess) throw new Error("The matching OpenAI Codex OAuth credential was incomplete.");
-    throw new Error("The active proxied OpenAI Codex account does not match Pi's stored OAuth account.");
-  }
-
-  const authorization = `Bearer ${match.access}`;
+  const authorization = `Bearer ${resolvedAccess}`;
   const headers = { Authorization: authorization };
-  const runtimeSecrets = [
-    result.apiKey,
-    ...Object.values(result.headers ?? {}),
-    match.access,
-    match.refresh,
-    authorization,
-  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  const runtimeSecrets = [result.apiKey, ...Object.values(result.headers ?? {}), resolvedAccess, authorization].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
   const effectiveBaseUrl = "https://chatgpt.com";
   return {
-    apiKey: match.access,
+    apiKey: resolvedAccess,
     headers,
     fingerprint: fingerprintResolvedAuth(
       {
@@ -973,9 +935,68 @@ async function resolveProxiedCodexUsageAuth(
     ),
     secrets: [...new Set(runtimeSecrets)],
     model,
-    auth: { apiKey: match.access },
+    auth: { apiKey: resolvedAccess },
     source: "matched Pi OAuth credential",
     effectiveBaseUrl,
+  };
+}
+
+function bindCodexUsageAccount(
+  ctx: ExtensionContext,
+  auth: ResolvedUsageAuth,
+  salt: Uint8Array,
+  credentialReader: StoredCredentialReader,
+  candidateReader: OAuthCredentialCandidateReader | undefined,
+): ResolvedUsageAuth {
+  const access = bearerToken(headerValue(auth.headers, "Authorization"));
+  if (!access) throw new Error("OpenAI Codex usage requires Bearer authentication.");
+  const tokenAccountId = codexAccountIdFromAccessToken(access);
+  if (!tokenAccountId) throw new Error("The active OpenAI Codex access token did not contain a valid account ID.");
+
+  const offered = candidateReader
+    ? candidateReader(ctx, "openai-codex")
+    : fallbackOAuthCredentialCandidates("openai-codex", credentialReader);
+  if (!offered.ok) throw new Error("OpenAI Codex OAuth credential discovery failed closed.");
+  let sawOAuth = false;
+  let sawMatchingAccess = false;
+  let sawIncompleteMatch = false;
+  const matches = new Map<string, { accountId: string; refresh: string }>();
+  for (const candidate of offered.candidates) {
+    const credential = asObject(candidate);
+    if (credential?.type !== "oauth") continue;
+    sawOAuth = true;
+    if (credential.access !== access) continue;
+    sawMatchingAccess = true;
+    const accountId = validCodexAccountId(credential.accountId);
+    const refresh = credential.refresh;
+    if (
+      !accountId ||
+      accountId !== tokenAccountId ||
+      typeof refresh !== "string" ||
+      !refresh ||
+      typeof credential.expires !== "number" ||
+      !Number.isFinite(credential.expires)
+    ) {
+      sawIncompleteMatch = true;
+      continue;
+    }
+    matches.set(refresh, { accountId, refresh });
+  }
+  if (sawIncompleteMatch) throw new Error("The matching OpenAI Codex OAuth credential was incomplete or had an invalid account ID.");
+  if (matches.size > 1) throw new Error("Conflicting OAuth credentials match the active OpenAI Codex account.");
+  const match = matches.values().next().value;
+  if (!match) {
+    if (!sawOAuth) throw new Error("OpenAI Codex usage requires the OAuth account configured through Pi /login.");
+    if (sawMatchingAccess) throw new Error("The matching OpenAI Codex OAuth credential was incomplete.");
+    throw new Error("The active OpenAI Codex account does not match Pi's stored OAuth account.");
+  }
+
+  const headers = { Authorization: `Bearer ${access}`, "chatgpt-account-id": match.accountId };
+  return {
+    ...auth,
+    headers,
+    fingerprint: fingerprintResolvedAuth({ headers, baseUrl: auth.effectiveBaseUrl, source: auth.fingerprint }, salt),
+    secrets: [...new Set([...auth.secrets, match.refresh, match.accountId])],
   };
 }
 

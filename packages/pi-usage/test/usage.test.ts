@@ -25,6 +25,13 @@ const openRouterModel = {
   baseUrl: "https://openrouter.ai/api/v1",
 };
 const codexToken = codexAccessToken("account-123");
+const codexCredential = () => ({
+  type: "oauth" as const,
+  access: codexToken,
+  refresh: "refresh-token",
+  expires: Date.now() + 60_000,
+  accountId: "account-123",
+});
 
 const codexModel = {
   id: "gpt-5.3-codex",
@@ -238,6 +245,7 @@ function usageFetch(input: string | URL | Request): Promise<Response> {
   return Promise.resolve(
     new Response(
       JSON.stringify({
+        account_id: "account-123",
         plan_type: "pro",
         rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 18_000 } },
       }),
@@ -320,6 +328,7 @@ test("current proxied Codex usage is read-only and fetches directly from the off
     requests.push(String(input));
     return new Response(
       JSON.stringify({
+        account_id: "account-123",
         plan_type: "pro",
         rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 18_000 } },
         rate_limit_reset_credits: { available_count: 1 },
@@ -396,6 +405,7 @@ test("proxied Codex account rotation aborts before the official usage request", 
       access: activeAccess,
       refresh: activeAccess === firstAccess ? "first-refresh" : "second-refresh",
       expires: Date.now() + 60_000,
+      accountId: activeAccess === firstAccess ? "account-123" : "account-456",
     }),
   });
   const command = mock.commands.get("usage");
@@ -466,6 +476,7 @@ test("current Codex usage can redeem a selected reset and refresh account state"
     usageRequests += 1;
     return new Response(
       JSON.stringify({
+        account_id: "account-123",
         plan_type: "pro",
         rate_limit: {
           primary_window: {
@@ -556,6 +567,7 @@ test("Codex reset confirmation defaults to cancellation and sends no mutation", 
     }
     return new Response(
       JSON.stringify({
+        account_id: "account-123",
         rate_limit: { primary_window: { used_percent: 80, limit_window_seconds: 18_000 } },
         rate_limit_reset_credits: { available_count: 1 },
       }),
@@ -651,7 +663,7 @@ test("explicit all-provider query retains DeepSeek balance, Kimi, and partial fa
   const configured = new Set(["openrouter", "openai-codex", "kimi-coding", "deepseek"]);
   let deepSeekAuthLookups = 0;
   const mock = createMockPi();
-  usageExtension(mock.pi);
+  usageExtension(mock.pi, { credentialReader: codexCredential });
   const command = mock.commands.get("usage");
   assert.ok(command);
   const { ctx, statuses } = createMockContext({
@@ -667,7 +679,12 @@ test("explicit all-provider query retains DeepSeek balance, Kimi, and partial fa
         if (provider === "deepseek") deepSeekAuthLookups += 1;
         return {
           auth: {
-            apiKey: provider === "deepseek" && deepSeekAuthLookups === 1 ? "deepseek-account-a" : `${provider}-key`,
+            apiKey:
+              provider === "openai-codex"
+                ? codexToken
+                : provider === "deepseek" && deepSeekAuthLookups === 1
+                  ? "deepseek-account-a"
+                  : `${provider}-key`,
             ...(provider === "kimi-coding" ? { baseUrl: kimiModel.baseUrl } : {}),
           },
         };
@@ -785,7 +802,7 @@ test("another-provider queries show only the selected provider and preserve curr
   const choices = ["View another configured provider…", "OpenAI Codex", "Close"];
   const titles: string[] = [];
   const mock = createMockPi();
-  usageExtension(mock.pi);
+  usageExtension(mock.pi, { credentialReader: codexCredential });
   const command = mock.commands.get("usage");
   assert.ok(command);
   const { ctx, statuses } = createMockContext({
@@ -797,7 +814,7 @@ test("another-provider queries show only the selected provider and preserve curr
       return choices.shift();
     },
     modelRegistry: {
-      getProviderAuth: async (provider: string) => ({ auth: { apiKey: `${provider}-key` } }),
+      getProviderAuth: async (provider: string) => ({ auth: { apiKey: provider === "openai-codex" ? codexToken : `${provider}-key` } }),
       getAvailable: () => [openRouterModel, codexModel],
       getAll: () => [openRouterModel, codexModel],
       getProviderAuthStatus: () => ({ configured: true }),
@@ -1981,7 +1998,7 @@ test("cross-provider results revalidate which account is Current before display"
   const choices = ["View another configured provider…", "OpenAI Codex", "Close"];
   const titles: string[] = [];
   const mock = createMockPi();
-  usageExtension(mock.pi);
+  usageExtension(mock.pi, { credentialReader: codexCredential });
   const command = mock.commands.get("usage");
   assert.ok(command);
   const { ctx } = createMockContext({
@@ -1993,7 +2010,7 @@ test("cross-provider results revalidate which account is Current before display"
       return choices.shift();
     },
     modelRegistry: {
-      getProviderAuth: async (provider: string) => ({ auth: { apiKey: `${provider}-key` } }),
+      getProviderAuth: async (provider: string) => ({ auth: { apiKey: provider === "openai-codex" ? codexToken : `${provider}-key` } }),
       getAvailable: () => [openRouterModel, codexModel],
       getAll: () => [openRouterModel, codexModel],
       getProviderAuthStatus: () => ({ configured: true }),
@@ -2063,6 +2080,7 @@ test("Codex reset countdown repaints locally and stops across replacement and sh
     fetches += 1;
     return new Response(
       JSON.stringify({
+        account_id: "account-123",
         rate_limit: {
           primary_window: {
             used_percent: 20,
@@ -2076,7 +2094,7 @@ test("Codex reset countdown repaints locally and stops across replacement and sh
   };
   const settings = memorySettingsRuntime({ codexStatusResetCountdown: true });
   const mock = createMockPi();
-  usageExtension(mock.pi, { settingsRuntime: settings.runtime });
+  usageExtension(mock.pi, { settingsRuntime: settings.runtime, credentialReader: codexCredential });
   const { ctx, statuses } = createMockContext({
     model: codexModel,
     modelRegistry: {
@@ -2130,6 +2148,7 @@ test("Codex reset countdown ignores a stale extension context", async (t) => {
     fetches += 1;
     return new Response(
       JSON.stringify({
+        account_id: "account-123",
         rate_limit: {
           primary_window: {
             used_percent: 20,
@@ -2143,7 +2162,7 @@ test("Codex reset countdown ignores a stale extension context", async (t) => {
   };
   const settings = memorySettingsRuntime({ codexStatusResetCountdown: true });
   const mock = createMockPi();
-  usageExtension(mock.pi, { settingsRuntime: settings.runtime });
+  usageExtension(mock.pi, { settingsRuntime: settings.runtime, credentialReader: codexCredential });
   const { ctx, statuses } = createMockContext({
     model: codexModel,
     modelRegistry: {
@@ -2215,7 +2234,7 @@ test("a slow command cannot overwrite status after the selected model changes", 
 
   const choices = ["Refresh current usage", "Close"];
   const mock = createMockPi();
-  usageExtension(mock.pi);
+  usageExtension(mock.pi, { credentialReader: codexCredential });
   const command = mock.commands.get("usage");
   assert.ok(command);
   const { ctx, statuses } = createMockContext({
@@ -2224,7 +2243,7 @@ test("a slow command cannot overwrite status after the selected model changes", 
     model: openRouterModel,
     select: async () => choices.shift(),
     modelRegistry: {
-      getProviderAuth: async (provider: string) => ({ auth: { apiKey: `${provider}-key` } }),
+      getProviderAuth: async (provider: string) => ({ auth: { apiKey: provider === "openai-codex" ? codexToken : `${provider}-key` } }),
       getAvailable: () => [openRouterModel, codexModel],
       getAll: () => [openRouterModel, codexModel],
       getProviderAuthStatus: () => ({ configured: true }),

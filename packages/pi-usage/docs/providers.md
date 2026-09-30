@@ -35,7 +35,8 @@ Unlike `pi-codex-usage`, this successor intentionally has no Codex CLI fallback 
 
 Read-only usage supports a current `openai-codex` model whose inference base URL uses a proxy.
 The freshly resolved runtime Bearer token must exactly match one complete OAuth credential from Pi's stored login or a compatible credential source.
-The extension drops proxy headers and sends only the matched Bearer token to `https://chatgpt.com/backend-api/wham/usage`.
+For direct and proxied models, the extension sends only the matched Bearer token and `chatgpt-account-id` to `https://chatgpt.com/backend-api/wham/usage`.
+It rejects usage responses without the matching `account_id` and never sends proxy headers.
 Missing, incomplete, mismatched, or conflicting OAuth credentials fail before network access.
 
 Reset redemption is available only when Codex is the current provider and uses the official ChatGPT origin.

@@ -175,7 +175,8 @@ Credential candidates are collected synchronously in memory and are not cached, 
 The protocol carries no account name or extension identity.
 Only the selected provider's exact runtime match is used, and secrets are sent only to its validated official origin.
 Read-only Codex usage also supports a proxied current model when its resolved Bearer token exactly matches one complete Pi OAuth credential.
-The extension drops proxy headers and sends only the matched Bearer token to the fixed ChatGPT usage endpoint.
+The extension drops proxy headers and sends only the matched Bearer token and `chatgpt-account-id` to the fixed ChatGPT usage endpoint.
+It rejects usage responses without the matching `account_id`.
 Codex reset-credit listing and redemption actions remain unavailable for proxy origins.
 DeepSeek balance requests require Bearer authentication, send only that resolved credential from Pi's runtime auth to `https://api.deepseek.com/user/balance`, and refuse redirects.
 Fireworks spend requests send only that resolved credential to the official `https://api.fireworks.ai` account-listing and billing-summary endpoints and refuse redirects.

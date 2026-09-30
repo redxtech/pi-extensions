@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { codexAccountIdFromAccessToken, validCodexAccountId } from "./codex-account.ts";
 import { fingerprintResolvedAuth, sanitizeDisplayText } from "./core.ts";
 import { fallbackOAuthCredentialCandidates, type OAuthCredentialCandidateReader } from "./oauth-credential-source.ts";
 import { AUTH_FINGERPRINT_SALT, adapterForProvider, fetchProviderJson, resolveUsageAuth } from "./query.ts";
@@ -148,6 +149,7 @@ export async function listCodexResetCredits(
     signal,
     timeoutMs,
     "Codex usage-limit reset endpoint",
+    { redirect: "error" },
   );
   return normalizeCodexResetCreditsPayload(payload);
 }
@@ -172,6 +174,7 @@ export async function consumeCodexResetCredit(
         redeem_request_id: redeemRequestId,
         ...(option.creditId ? { credit_id: option.creditId } : {}),
       },
+      redirect: "error",
     },
   );
   const code = payload.code;
@@ -227,7 +230,7 @@ function selectCodexResetCredential(
       const storedAccess = asNonemptyString(credential.access);
       if (storedAccess !== resolvedAccess) continue;
       sawMatchingAccess = true;
-      const accountId = validHeaderValue(credential.accountId);
+      const accountId = validCodexAccountId(credential.accountId);
       const refresh = asNonemptyString(credential.refresh);
       if (!accountId || accountId !== resolvedAccountId || !refresh) {
         sawInvalidAccountId = true;
@@ -259,18 +262,6 @@ function selectCodexResetCredential(
       ? "The active OpenAI Codex runtime account does not match Pi's stored OAuth account."
       : "The active OpenAI Codex runtime account does not match any available OAuth account.",
   );
-}
-
-function codexAccountIdFromAccessToken(access: string): string | undefined {
-  try {
-    const parts = access.split(".");
-    if (parts.length !== 3 || !parts[1]) return undefined;
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as unknown;
-    const claims = asObject(asObject(payload)?.["https://api.openai.com/auth"]);
-    return validHeaderValue(claims?.chatgpt_account_id);
-  } catch {
-    return undefined;
-  }
 }
 
 function normalizeResetOption(credit: Record<string, unknown>): CodexResetOption {
@@ -320,12 +311,6 @@ function asOpaqueId(value: unknown): string | undefined {
 function displayString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   return sanitizeDisplayText(value, 160) || undefined;
-}
-
-function validHeaderValue(value: unknown): string | undefined {
-  if (typeof value !== "string" || !value || value.length > 512) return undefined;
-  if (/[^\x20-\x7e]/u.test(value)) return undefined;
-  return value;
 }
 
 function nonnegativeInteger(value: unknown): number | undefined {

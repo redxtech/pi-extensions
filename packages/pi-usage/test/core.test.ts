@@ -296,7 +296,7 @@ test("read-only Codex usage bypasses a proxy only for the matching stored OAuth 
   await assert.rejects(() => resolveUsageAuth(ctx, adapter), /custom.*official/iu);
   const auth = await resolveReadOnlyUsageAuth(ctx, adapter, new Uint8Array(32), () => credential);
   assert.ok(auth);
-  assert.deepEqual(auth.headers, { Authorization: `Bearer ${access}` });
+  assert.deepEqual(auth.headers, { Authorization: `Bearer ${access}`, "chatgpt-account-id": "account-123" });
   assert.equal(auth.effectiveBaseUrl, "https://chatgpt.com");
   assert.ok(auth.secrets.includes("refresh-secret"));
   assert.ok(auth.secrets.includes("must-not-leak"));
@@ -304,18 +304,21 @@ test("read-only Codex usage bypasses a proxy only for the matching stored OAuth 
   const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
     new Response(
       JSON.stringify({
-        rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 18_000 } },
+        account_id: "account-123",
+        rate_limit: { primary_window: { used_percent: 51, limit_window_seconds: 604_800 } },
       }),
       { status: 200 },
     ),
   );
   try {
-    await queryProviderUsage(adapter, auth, new AbortController().signal, 1_000);
+    const report = await queryProviderUsage(adapter, auth, new AbortController().signal, 1_000);
+    assert.equal(report.buckets[0]?.remaining, 49);
     assert.equal(fetchMock.mock.calls.length, 1);
     assert.equal(fetchMock.mock.calls[0]?.[0], "https://chatgpt.com/backend-api/wham/usage");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     assert.deepEqual(init.headers, {
       Authorization: `Bearer ${access}`,
+      "chatgpt-account-id": "account-123",
       "User-Agent": "pi-usage",
     });
   } finally {
@@ -387,6 +390,66 @@ test("read-only Codex usage bypasses a proxy only for the matching stored OAuth 
       ),
     /failed closed/iu,
   );
+});
+
+test("official Codex usage binds the runtime token to its Pi OAuth account", async () => {
+  const adapter = SUPPORTED_ADAPTERS.find((candidate) => candidate.id === "openai-codex");
+  assert.ok(adapter);
+  const access = codexAccessToken("account-123");
+  const model = {
+    id: "gpt-5.6-sol",
+    name: "GPT-5.6 Sol",
+    provider: "openai-codex",
+    baseUrl: "https://chatgpt.com/backend-api",
+  };
+  const { ctx } = createMockContext({
+    model,
+    modelRegistry: {
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: access,
+        headers: { Authorization: `Bearer ${access}`, "X-Proxy-Secret": "must-not-leak" },
+      }),
+      getProviderAuth: async () => ({ auth: { apiKey: access } }),
+      getAvailable: () => [model],
+      getAll: () => [model],
+    },
+  });
+  const credential = {
+    type: "oauth" as const,
+    access,
+    refresh: "refresh-secret",
+    expires: Date.now() + 60_000,
+    accountId: "account-123",
+  };
+  const auth = await resolveReadOnlyUsageAuth(ctx, adapter, new Uint8Array(32), () => credential);
+  assert.ok(auth);
+  assert.deepEqual(auth.headers, { Authorization: `Bearer ${access}`, "chatgpt-account-id": "account-123" });
+  assert.ok(!Object.values(auth.headers).includes("must-not-leak"));
+  assert.ok(auth.secrets.includes("refresh-secret"));
+  assert.notEqual(auth.fingerprint, (await resolveUsageAuth(ctx, adapter, new Uint8Array(32)))?.fingerprint);
+
+  for (const mismatched of [
+    { ...credential, accountId: "another-account" },
+    { ...credential, accountId: "account-123\nX-Leak: yes" },
+    { ...credential, access: codexAccessToken("another-account") },
+  ]) {
+    await assert.rejects(
+      () => resolveReadOnlyUsageAuth(ctx, adapter, new Uint8Array(32), () => mismatched),
+      /account|credential|match/iu,
+    );
+  }
+
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(JSON.stringify({ account_id: "another-account", rate_limit: { primary_window: { used_percent: 0 } } })),
+  );
+  try {
+    await assert.rejects(() => queryProviderUsage(adapter, auth, new AbortController().signal, 1_000), /account/iu);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ rate_limit: { primary_window: { used_percent: 0 } } })));
+    await assert.rejects(() => queryProviderUsage(adapter, auth, new AbortController().signal, 1_000), /account/iu);
+  } finally {
+    fetchMock.mockRestore();
+  }
 });
 
 test("GitHub Copilot usage uses the matching Pi OAuth refresh token", async () => {

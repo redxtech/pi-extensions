@@ -26,6 +26,7 @@ const credential = (access = "codex-token") => ({
 function usageResponse(resetCount: number): Response {
   return new Response(
     JSON.stringify({
+      account_id: "account-123",
       rate_limit: { primary_window: { used_percent: 80, limit_window_seconds: 18_000 } },
       rate_limit_reset_credits: { available_count: resetCount },
     }),
@@ -72,7 +73,7 @@ test("zero Codex reset availability is visible and cannot mutate", async (t) => 
   };
   let rootOptions: string[] = [];
   const mock = createMockPi();
-  usageExtension(mock.pi);
+  usageExtension(mock.pi, { credentialReader: () => credential() });
   const command = mock.commands.get("usage");
   assert.ok(command);
   const { ctx } = createMockContext({
@@ -106,6 +107,7 @@ test("missing reset summary keeps the current Codex availability check reachable
     }
     return new Response(
       JSON.stringify({
+        account_id: "account-123",
         rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 18_000 } },
       }),
       { status: 200 },
