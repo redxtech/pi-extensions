@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-
 import {
 	buildStructuredDiff,
 	diffSummary,
@@ -47,7 +45,6 @@ import {
 import { renderStackedToolResult, type StackableToolName } from "./stack.js";
 
 export type BuiltInToolName = StackableToolName | "edit" | "write";
-export type BuiltInToolSet = Partial<Record<BuiltInToolName, any>>;
 
 /** renderer slots that can replace presentation without replacing a tool definition */
 export interface CompactToolRendererDefinition {
@@ -58,38 +55,6 @@ export interface CompactToolRendererDefinition {
 
 /** compact renderer definitions keyed by the selected tool name */
 export type CompactToolRendererMap = Partial<Record<BuiltInToolName, CompactToolRendererDefinition>>;
-
-const builtInToolCache = new Map<string, BuiltInToolSet>();
-
-export function normalizedCwd(cwd?: string): string {
-	return resolve(cwd || process.cwd());
-}
-
-function createBuiltInToolSet(agent: any, cwd: string): BuiltInToolSet {
-	return {
-		read: agent.createReadTool?.(cwd),
-		bash: agent.createBashTool?.(cwd),
-		edit: agent.createEditTool?.(cwd),
-		write: agent.createWriteTool?.(cwd),
-		grep: agent.createGrepTool?.(cwd),
-		find: agent.createFindTool?.(cwd),
-		ls: agent.createLsTool?.(cwd),
-	};
-}
-
-export function getBuiltInTool(agent: any, cwd: string, toolName: BuiltInToolName): any {
-	const key = normalizedCwd(cwd);
-	let tools = builtInToolCache.get(key);
-	if (!tools) {
-		tools = createBuiltInToolSet(agent, key);
-		builtInToolCache.set(key, tools);
-	}
-	return tools[toolName];
-}
-
-export function contextCwd(context: any, fallback: string): string {
-	return context?.cwd ?? fallback;
-}
 
 interface BashLiveTailState {
 	startedAt?: number;

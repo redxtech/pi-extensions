@@ -40,7 +40,7 @@
         {
           "key": "stackToolCalls",
           "label": "Stack separate native tool calls",
-          "description": "Legacy renderer for consecutive native read/bash/search tool calls. Disabled by default because Pi still reserves hidden sibling layout space; prefer tool_batch for clean combined output.",
+          "description": "Stack consecutive native read/bash/search tool calls. Disabled by default because Pi still reserves hidden sibling layout space.",
           "type": "boolean",
           "default": false,
           "category": "General",
@@ -108,34 +108,6 @@
           "type": "boolean",
           "default": false,
           "category": "General",
-          "apply": "live"
-        },
-        {
-          "key": "registerBatchTool",
-          "label": "Register tool_batch",
-          "description": "Add a composite tool that runs multiple independent read/grep/find/ls/bash calls as one compact renderable unit.",
-          "type": "boolean",
-          "default": true,
-          "category": "Batch Tool",
-          "apply": "reload",
-          "requiresReload": true
-        },
-        {
-          "key": "batchMaxCalls",
-          "label": "Batch max calls",
-          "description": "Maximum calls accepted by tool_batch.",
-          "type": "number",
-          "default": 8,
-          "category": "Batch Tool",
-          "apply": "live"
-        },
-        {
-          "key": "batchCallTimeoutMs",
-          "label": "Batch per-call timeout (ms)",
-          "description": "Maximum time tool_batch waits for any single inner tool call before timing it out as an error item. Prevents a never-resolving inner from hanging the whole batch. Minimum 1000ms.",
-          "type": "number",
-          "default": 120000,
-          "category": "Batch Tool",
           "apply": "live"
         },
         {

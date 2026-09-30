@@ -1,6 +1,6 @@
 # pi-tool-renderer
 
-Local display-only renderers for Pi tools. Includes an optional `tool_batch` tool and rich mutation diff rendering.
+Display-only renderers for Pi tools and messages, with optional rich mutation diffs. The package does not register or execute tools.
 
 ## Highlights
 
@@ -8,7 +8,6 @@ Local display-only renderers for Pi tools. Includes an optional `tool_batch` too
 - Hashline-aware `read` summaries and previews when another extension owns the tool.
 - Delayed live bash tails avoid fast-command output flashes; long-running commands show/preserve the last few lines flush-left so copied output has no gutter characters.
 - Pi-compatible terminal normalization handles CRLF/lone-CR line endings and expands visible tabs to three columns.
-- `tool_batch` runs multiple independent search/list/diagnostic bash calls and renders one combined result.
 - Optional rich Shiki diffs for `edit`/`write` with side-by-side previews, hunk counts, and inline word highlights.
 - Compact user-message cards with a green border and red π marker.
 - Compaction summaries and skill invocations render with the same compact chrome.
@@ -17,30 +16,13 @@ Local display-only renderers for Pi tools. Includes an optional `tool_batch` too
 
 Defaults leave `edit`/`write` on Pi's built-in renderers. Enable **Render edits/writes compactly** to opt in.
 
-Compact rendering attaches to the selected `read` provider without replacing it. `tool_batch` rejects `read` because it cannot safely delegate custom execution.
+Compact rendering attaches to the selected `read` provider without replacing it.
 
 ## Install
 
 This extension is maintained in `~/Code/pi-extensions/packages/pi-tool-renderer`. It is modified from the MIT-licensed renderer in the [vstack](https://github.com/vanillagreencom/vstack) project.
 
 Add `../../Code/pi-extensions/packages/pi-tool-renderer` to the `packages` array in `~/.pi/agent/settings.json`. Restart Pi after changes.
-
-## `tool_batch`
-
-```json
-{
-  "calls": [
-    { "tool": "ls", "path": "." },
-    { "tool": "grep", "pattern": "registerCommand", "path": "extensions" }
-  ]
-}
-```
-
-Accepts `grep`, `find`, `ls`, and diagnostic `bash`. Per-call arguments can be flat or wrapped in `args`.
-
-Prefer it for independent inspection calls. **Don't** use it for mutating commands, order-dependent commands, streaming output, or anything you want to inspect separately.
-
-If the combined output would exceed Pi's normal tool-result budget, child outputs are capped to fit (head + tail preserved). Use separate calls or `read` `offset`/`limit` for the full budget per call.
 
 ## Settings
 
@@ -54,11 +36,8 @@ Glyph style: each package exposes `glyphStyle` (`unicode` default, `ascii` for t
 | --- | --- | --- |
 | General | Enable compact renderers | Apply compact read, bash, and search rendering without replacing tool definitions. |
 | General | Tree connector style | `unicode` or `ascii`. |
-| General | Stack separate native tool calls | Legacy renderer for consecutive native tool calls. Prefer `tool_batch`. |
+| General | Stack separate native tool calls | Group consecutive native tool rows. Disabled by default because Pi reserves hidden sibling layout space. |
 | General | Stack child display | `rows`, `headline`, or `anchor-list` when stacking is on. |
-| Batch tool | Register tool_batch | Add the composite tool. |
-| Batch tool | Batch max calls | Max calls per `tool_batch` invocation. |
-| Batch tool | Batch per-call timeout (ms) | Max time any one child call may run before `tool_batch` reports that child as timed out. |
 | Messages | Compact user messages | Green border + red π marker instead of filled background; preserves Pi's prompt-zone markers around the full framed card. |
 | Messages | User message trailing blank line | Extra blank line after user messages. |
 | Messages | Compact compaction summaries | Compact bullet style instead of Pi's padded box. |
@@ -99,6 +78,8 @@ Glyph style: each package exposes `glyphStyle` (`unicode` default, `ascii` for t
 
 ## Notes
 
-This local extension does not replace built-in tool definitions or execution. The `tool_batch` tool remains a separate composite tool and caps combined child output when necessary.
+The extension changes presentation without replacing tool definitions or execution. Optional mutation rendering adds diff metadata to results for session restoration.
+
+`tool_batch` and its settings (`registerBatchTool`, `batchMaxCalls`, and `batchCallTimeoutMs`) have been removed. Existing values are ignored.
 
 Contributor-facing module layout and regression coverage are in [`DEVELOPMENT.md`](./DEVELOPMENT.md).

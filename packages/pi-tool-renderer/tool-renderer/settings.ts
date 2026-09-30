@@ -116,10 +116,6 @@ export function stackChildDisplay(cwd?: string): StackChildDisplay {
 	return settingBoolean("hideStackChildRows", false, cwd) ? "headline" : "rows";
 }
 
-export function stackShell(cwd?: string): { renderShell?: "self" } {
-	return stackToolCalls(cwd) ? { renderShell: "self" } : {};
-}
-
 export type ReadOutputMode = "hidden" | "summary" | "preview";
 export type ReadImageMode = "off" | "always" | "on";
 export type SearchOutputMode = "hidden" | "count" | "preview";

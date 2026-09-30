@@ -129,6 +129,9 @@ describe("custom read compatibility", () => {
 		const renderers = createCompactToolRendererMap(cwd);
 
 		expect(Object.keys(renderers).sort()).toEqual(["bash", "edit", "find", "grep", "ls", "read", "write"]);
+		for (const renderer of Object.values(renderers)) {
+			expect(Object.keys(renderer).sort()).toEqual(["renderCall", "renderResult", "renderShell"]);
+		}
 		expect(__test.compactToolRenderer("read", renderers, cwd)).toBe(renderers.read);
 		expect(__test.compactToolRenderer("bash", renderers, cwd)).toBe(renderers.bash);
 		expect(__test.compactToolRenderer("question", renderers, cwd)).toBeUndefined();

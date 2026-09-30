@@ -1,6 +1,6 @@
-import { CompactionSummaryMessageComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as agent from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { registerToolBatch } from "./tool-renderer/batch.js";
 import {
 	installToolChromePatch,
 	installToolExecutionRendererPatch,
@@ -24,16 +24,14 @@ import { createCompactToolRendererMap } from "./tool-renderer/tools.js";
 
 const INSTALL_SYMBOL = Symbol.for("vstack.pi-tool-renderer.installed");
 
-export default async function toolRenderer(pi: ExtensionAPI): Promise<void> {
+export default function toolRenderer(pi: ExtensionAPI): void {
 	const guard = pi as unknown as Record<PropertyKey, unknown>;
 	if (guard[INSTALL_SYMBOL]) return;
 	guard[INSTALL_SYMBOL] = true;
 	if (!settingBoolean("enabled", true)) return;
 	pi.on("session_start", (_event, ctx) => recordProjectTrust(ctx));
 
-	const cwd = process.cwd();
-	const agent = await import("@earendil-works/pi-coding-agent");
-	const renderers = createCompactToolRendererMap(cwd);
+	const renderers = createCompactToolRendererMap(process.cwd());
 	registerStackEvents(pi);
 	installToolExecutionRendererPatch(pi, renderers);
 	registerMutationResultEnrichment(pi);
@@ -43,11 +41,10 @@ export default async function toolRenderer(pi: ExtensionAPI): Promise<void> {
 	installWorkingLoaderAlignmentPatch();
 	installWorkingIndicator(pi);
 	installMarkdownCodeBlockRenderer(pi);
-	installCompactionSummaryRenderer(pi, CompactionSummaryMessageComponent);
+	installCompactionSummaryRenderer(pi, agent.CompactionSummaryMessageComponent);
 
 	installUserMessageRenderer(pi, agent.UserMessageComponent);
 	installAssistantMessageRenderer(pi, agent.AssistantMessageComponent);
 	installCustomMessageSpacingPatch(pi, (agent as any).CustomMessageComponent);
 	installSkillInvocationRenderer(pi, (agent as any).SkillInvocationMessageComponent);
-	if (settingBoolean("registerBatchTool", true, cwd)) registerToolBatch(pi, agent, cwd);
 }

@@ -6,7 +6,7 @@ import {
 	stackChildDisplay,
 	type StackChildDisplay,
 } from "./settings.js";
-import { stackPrefix, toolLabel, treeConnector, treeStem, type TreeBranch } from "./theme.js";
+import { stackPrefix, treeConnector, treeStem, type TreeBranch } from "./theme.js";
 import {
 	commandExit,
 	joinPhrases,
@@ -20,15 +20,15 @@ import {
 	readDisplayContent,
 	readOnlyCallText,
 	readResultSummary,
+	renderPathListPreview,
 	resultTruncated,
 	splitTerminalLines,
 	textContent,
 	type TruncatedLines,
 } from "./text.js";
-import { renderPathListPreview } from "./text.js";
 
 export type StackableToolName = "read" | "bash" | "grep" | "find" | "ls";
-export type StackItemStatus = "running" | "done" | "error";
+type StackItemStatus = "running" | "done" | "error";
 
 export interface StackItem {
 	args: any;
@@ -63,7 +63,7 @@ function clearStackState(): void {
 	stackBatchCounter = 0;
 }
 
-export function isStackableToolName(toolName: unknown): toolName is StackableToolName {
+function isStackableToolName(toolName: unknown): toolName is StackableToolName {
 	return typeof toolName === "string" && STACKABLE_TOOLS.has(toolName);
 }
 
@@ -99,7 +99,7 @@ export function contextToolCallId(context: any, toolName: string, args: any): st
 	return String(context?.toolCallId ?? context?.id ?? `${toolName}:${JSON.stringify(args ?? {})}`);
 }
 
-export function stackItemCallText(item: StackItem, theme: any, cwd?: string): string {
+function stackItemCallText(item: StackItem, theme: any, cwd?: string): string {
 	if (item.toolName === "read") return readCallText(item.args, theme, cwd);
 	if (item.toolName === "bash") return bashCallText(item.args, theme, cwd);
 	return readOnlyCallText(item.toolName, item.args, theme, cwd);

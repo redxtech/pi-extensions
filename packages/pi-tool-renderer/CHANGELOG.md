@@ -2,6 +2,12 @@
 
 ## Consumer-impacting changes
 
+### Unreleased
+
+- Removed `tool_batch`. The package now provides renderers without registering or executing tools.
+- Removed `registerBatchTool`, `batchMaxCalls`, and `batchCallTimeoutMs` from the settings UI. Existing values are ignored.
+- Removed the built-in tool factory/cache and batch-only execution helpers.
+
 ### 1.8.0-local.1
 
 - Copied the extension into the local Pi configuration.
