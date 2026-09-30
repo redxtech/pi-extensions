@@ -8,7 +8,6 @@ const agentDir = mkdtempSync(join(tmpdir(), "pi-auto-rename-"))
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR
 process.env.PI_CODING_AGENT_DIR = agentDir
 const {
-  DEFAULT_RENAME_MODEL,
   deleteModelPreference,
   formatModelPreference,
   getRenameModelPreferences,
@@ -33,10 +32,12 @@ after(() => {
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir
 })
 
-test("uses the existing default when preferences are missing", () => {
+test("uses openai/openai-sub/gpt-6-luna when preferences are missing", () => {
   const state = resolveInitialRenameConfig()
   assert.equal(state.modelConfig.kind, "missing")
-  assert.deepEqual(getRenameModelPreferences(state.modelConfig), [DEFAULT_RENAME_MODEL])
+  assert.deepEqual(getRenameModelPreferences(state.modelConfig), [
+    { provider: "openai", id: "openai-sub/gpt-6-luna" },
+  ])
 })
 
 test("parses an ordered model list and IDs containing slashes", () => {

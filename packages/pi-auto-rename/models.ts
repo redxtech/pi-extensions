@@ -59,8 +59,8 @@ export interface RenameState {
 }
 
 export const DEFAULT_RENAME_MODEL: RenameModelPreference = {
-  provider: "openai-codex",
-  id: "openai-sub/gpt-5.6-luna",
+  provider: "openai",
+  id: "openai-sub/gpt-6-luna",
 }
 
 export function createRenameState(): RenameState {

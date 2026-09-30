@@ -19,7 +19,7 @@ Preferences are stored in `extensions/pi-rename.json` inside the Pi agent direct
 ```json
 {
   "models": [
-    "openai-codex/openai-sub/gpt-5.6-luna",
+    "openai/openai-sub/gpt-6-luna",
     "anthropic/claude-sonnet-4-5"
   ],
   "language": "auto"
@@ -30,7 +30,7 @@ Preferences are stored in `extensions/pi-rename.json` inside the Pi agent direct
 
 The text fallback runs only after all models fail. An invalid configuration also uses the text fallback. Cancellation stops the sequence without a rename.
 
-Without a model preference, the default is `openai-codex/openai-sub/gpt-5.6-luna`. Existing `model` strings remain supported as one-item lists. When both fields exist, `models` takes precedence. Saving a model list removes the legacy `model` field.
+Without a model preference, the default is `openai/openai-sub/gpt-6-luna`. Existing `model` strings remain supported as one-item lists. When both fields exist, `models` takes precedence. Saving a model list removes the legacy `model` field.
 
 The `/rename config` picker marks selected models with their attempt numbers. Enter adds or removes a model. New selections go last. Removing and selecting a model again moves it last. `Save model order` saves a non-empty list. `Use default` removes both model preference fields. Escape cancels without saving. Search filters the choices without changing the order.
 
