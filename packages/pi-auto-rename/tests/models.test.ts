@@ -32,11 +32,11 @@ after(() => {
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir
 })
 
-test("uses openai/openai-sub/gpt-6-luna when preferences are missing", () => {
+test("uses codex/codex-proxy/gpt-6-luna when preferences are missing", () => {
   const state = resolveInitialRenameConfig()
   assert.equal(state.modelConfig.kind, "missing")
   assert.deepEqual(getRenameModelPreferences(state.modelConfig), [
-    { provider: "openai", id: "openai-sub/gpt-6-luna" },
+    { provider: "codex", id: "codex-proxy/gpt-6-luna" },
   ])
 })
 
