@@ -8,6 +8,7 @@ import { OPENAI_CODEX_USAGE_FALLBACK_URL } from "./openai-codex-fallback.ts";
 import { fallbackOAuthCredentialCandidates, type OAuthCredentialCandidateReader } from "./oauth-credential-source.ts";
 import { normalizeBasetenBillingUsagePayload } from "./providers/baseten.ts";
 import { normalizeCodexBackendPayload } from "./providers/codex.ts";
+import { createCLIProxyCodexAdapter, resolveCLIProxyCodexAuth } from "./providers/cliproxy-codex.ts";
 import { normalizeDeepSeekBalancePayload } from "./providers/deepseek.ts";
 import { createFireworksAdapter } from "./providers/fireworks.ts";
 import { normalizeGitHubCopilotUsagePayload } from "./providers/github-copilot.ts";
@@ -76,6 +77,7 @@ const MAX_ERROR_BODY_BYTES = 4 * 1024;
 export const AUTH_FINGERPRINT_SALT = randomBytes(32);
 
 export const SUPPORTED_ADAPTERS: readonly UsageProviderAdapter[] = [
+  createCLIProxyCodexAdapter(fetchProviderJson),
   {
     id: "baseten",
     displayName: "Baseten",
@@ -375,6 +377,10 @@ export async function resolveUsageAuth(
   credentialReader: StoredCredentialReader = readStoredCredential,
   candidateReader?: OAuthCredentialCandidateReader,
 ): Promise<ResolvedUsageAuth | undefined> {
+  if (adapter.id === "codex") {
+    const model = candidateModels(ctx, adapter.id)[0];
+    return model ? resolveCLIProxyCodexAuth(model, salt) : undefined;
+  }
   if (ctx.model?.provider === adapter.id && !hasOfficialProviderOrigin(ctx.model, adapter.id)) {
     throw new Error(
       `${adapter.displayName} usage cannot send a custom provider base URL credential to the official usage endpoint.`,
@@ -668,7 +674,9 @@ export async function fetchProviderJson(
     try {
       parsed = JSON.parse(text) as unknown;
     } catch (error) {
-      throw new Error(`${description} returned invalid JSON: ${errorMessage(error)}`);
+      throw new Error(auth.usageKind === "cliproxyapi-codex"
+        ? `${description} returned invalid JSON.`
+        : `${description} returned invalid JSON: ${errorMessage(error)}`);
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error(`${description} response was not an object.`);

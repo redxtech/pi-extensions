@@ -774,10 +774,10 @@ for (const { provider, baseUrl, failure, message } of zaiRefreshBackoffCases) {
   });
 }
 
-test("only Z.AI adapters opt into failed-query cache invalidation", () => {
+test("CLIProxyAPI and Z.AI adapters opt into failed-query cache invalidation", () => {
   assert.deepEqual(
     SUPPORTED_ADAPTERS.filter((adapter) => adapter.invalidateCacheOnFailure).map((adapter) => adapter.id),
-    ["zai", "zai-coding-cn"],
+    ["codex", "zai", "zai-coding-cn"],
   );
 });
 

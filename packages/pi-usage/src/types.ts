@@ -49,7 +49,7 @@ export interface UsageReport {
 }
 
 export interface ResolvedUsageAuth {
-  usageKind?: "openai-codex-fallback";
+  usageKind?: "openai-codex-fallback" | "cliproxyapi-codex";
   apiKey?: string;
   headers: Record<string, string>;
   fingerprint: string;

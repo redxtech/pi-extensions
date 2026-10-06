@@ -39,6 +39,7 @@ import type {
   ResolvedUsageAuth,
   UsageDisplayState,
   UsageProviderAdapter,
+  UsageReport,
 } from "./types.ts";
 import {
   configuredAdapters,
@@ -95,6 +96,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
   const createRedemptionId = dependencies.createRedemptionId ?? randomUUID;
   const settingsRuntime = dependencies.settingsRuntime ?? createUsageSettingsRuntime();
   const cache = new UsageCache(CACHE_TTL_MS);
+  const proxyReportGuards = new WeakMap<UsageReport, () => Promise<void>>();
   const failureBackoff = new Map<string, { until: number; message: string }>();
   const latestQueries = new Map<string, number>();
   const activeControllers = new Set<AbortController>();
@@ -152,7 +154,14 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
     statusRefreshTimer.unref?.();
   };
 
+  const revalidateProxyReport = async (report: UsageReport) => {
+    const guard = proxyReportGuards.get(report);
+    if (!guard) throw abortError();
+    await guard();
+  };
+
   const publishStatus = async (ctx: ExtensionContext, outcome: QueryOutcome, model: PiModel, shouldSchedule: boolean) => {
+    const publicationGeneration = statusGeneration;
     clearStatusCountdownTimer();
     if (outcome.fallbackGuard) {
       try { await outcome.fallbackGuard(); } catch {
@@ -160,6 +169,16 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         clearStatus(ctx);
         return;
       }
+    }
+    if (outcome.state.status === "ready" && outcome.state.providerId === "codex") {
+      try { await revalidateProxyReport(outcome.state.report); } catch {
+        if (publicationGeneration === statusGeneration) {
+          invalidateProviderState("codex");
+          clearStatus(ctx);
+        }
+        return;
+      }
+      if (publicationGeneration !== statusGeneration) return;
     }
     if (adapterForProvider(model.provider)?.publishesStatusline === false) {
       clearStatusRefreshTimer();
@@ -187,7 +206,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       return;
     }
     const showCodexResetCountdown =
-      (outcome.state.report.providerId === "openai-codex" || outcome.state.report.fallback !== undefined) && settingsRuntime.get().settings.codexStatusResetCountdown;
+      (outcome.state.report.providerId === "openai-codex" || outcome.state.report.providerId === "codex" || outcome.state.report.fallback !== undefined) && settingsRuntime.get().settings.codexStatusResetCountdown;
     const now = Date.now();
     const rawValue = formatUsageStatusline(
       outcome.state.report, model, now, showCodexResetCountdown,
@@ -383,8 +402,33 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       if (displayState === "current") {
         transitionCurrentIdentity(`${adapter.id}:${queryFingerprint}`, adapter.id);
       }
+      const bindProxyPublication = (report: UsageReport) => {
+        if (adapter.id !== "codex") return;
+        proxyReportGuards.set(report, async () => {
+          const controller = new AbortController();
+          activeControllers.add(controller);
+          const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+          try {
+            if (requestContextChanged()) throw abortError();
+            const fresh = await resolveReadOnlyUsageAuth(ctx, adapter);
+            if (requestContextChanged() || fresh?.fingerprint !== auth.fingerprint || !fresh) throw abortError();
+            const publicationGuard = async () => {
+              if (controller.signal.aborted || requestContextChanged()) throw abortError();
+              const latest = await resolveReadOnlyUsageAuth(ctx, adapter);
+              if (requestContextChanged() || latest?.fingerprint !== auth.fingerprint) throw abortError();
+            };
+            const choices = await listUsageTargets(adapter, fresh, controller.signal, DEFAULT_TIMEOUT_MS, publicationGuard);
+            if (!choices.some((choice) => choice.id === target.targetId)) throw abortError();
+          } finally {
+            clearTimeout(timeout);
+            controller.abort();
+            activeControllers.delete(controller);
+          }
+        });
+      };
       const cached = !force ? cache.get(adapter.id, queryFingerprint) : undefined;
       if (cached) {
+        bindProxyPublication(cached);
         return {
           state: {
             providerId: adapter.id,
@@ -425,6 +469,7 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       );
       if (requiresRequestBoundaryGuard) await guard();
       const effectiveReport = { ...report, providerName };
+      bindProxyPublication(effectiveReport);
       if (latestQueries.get(failureKey) === queryId) {
         cache.set(adapter.id, queryFingerprint, effectiveReport);
         failureBackoff.delete(failureKey);
@@ -775,6 +820,14 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
         );
       } catch (error) {
         if (isAbortError(error) || isStaleExtensionContextError(error)) throw error;
+        return false;
+      }
+    }
+    if (outcome.state.status === "ready" && outcome.state.providerId === "codex") {
+      try { await revalidateProxyReport(outcome.state.report); } catch (error) {
+        if (isStaleExtensionContextError(error)) throw error;
+        invalidateProviderState("codex");
+        safeSetStatus(ctx, undefined);
         return false;
       }
     }
@@ -1489,6 +1542,17 @@ export default function usageExtension(pi: ExtensionAPI, dependencies: UsageExte
       });
       await runMenu(ctx, menu, {
         getState: async () => {
+          for (let index = 0; index < visibleStates.length; index += 1) {
+            const state = visibleStates[index];
+            if (state?.status !== "ready" || state.providerId !== "codex") continue;
+            try { await revalidateProxyReport(state.report); } catch {
+              invalidateProviderState("codex");
+              visibleStates[index] = { providerId: "codex", providerName: state.providerName,
+                displayState: state.displayState, status: "auth-unavailable",
+                message: "CLIProxyAPI management auth or the selected proxy account changed. Refresh usage or select the account again." };
+              if (state.displayState === "current") safeSetStatus(ctx, undefined);
+            }
+          }
           if (current.fallbackGuard) {
             try { await current.fallbackGuard(); } catch {
               invalidateProviderState("openai");

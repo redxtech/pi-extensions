@@ -78,6 +78,53 @@ Target selections are stored only as IDs in the provider-neutral `selectedTarget
 The former `fireworksAccountId` field remains read-compatible: it supplies `selectedTargets.fireworks` in memory only when the generic value is absent.
 A successful explicit Fireworks account selection writes the generic field and removes the legacy field atomically; ordinary reads do not rewrite the file.
 
+### CLIProxyAPI account usage
+
+The existing Pi provider `codex` can report one CLIProxyAPI-managed Codex OAuth account through `/usage` and the statusline.
+The report is a **selected proxy account**, not a verified current inference account.
+One eligible account is selected automatically. Multiple accounts require an explicit choice through `/usage`.
+The selection persists in `selectedTargets.codex`. Quotas are not aggregated. Fast mode and reset redemption remain unavailable.
+If the account listing omits ID-token metadata, discovery reads the authenticated quota identity through the proxy.
+An empty upstream account ID identifies token-default quota scope, not a verified workspace.
+The extension hashes the credential, user, and scope identity for target selection and checks it again before publication.
+
+**Warning:** The management key grants privileged CLIProxyAPI management access, not just quota reads.
+Use only a trusted management endpoint. HTTP sends the management key without TLS.
+HTTP is supported for trusted tailnet transport. Its security depends on that network and endpoint.
+The extension never derives a management endpoint from Aperture or another inference URL.
+
+1. Set the explicit management URL before starting Pi. Replace this example with your trusted endpoint:
+
+   ```fish
+   set -gx CLIPROXYAPI_MANAGEMENT_URL http://trusted-cliproxyapi:8317
+   ```
+
+2. Supply the management key through the environment without putting its value in shell history:
+
+   ```fish
+   read --silent --prompt-str 'CLIProxyAPI management key: ' --export CLIPROXYAPI_MANAGEMENT_KEY
+   echo
+   ```
+
+3. Start Pi from that environment.
+4. Select a `codex` model and open `/usage`.
+5. If several accounts are listed, select **Select proxy account…**.
+
+The URL accepts an HTTP(S) origin or its canonical `/v0/management` root, with an optional trailing slash.
+URL credentials, query strings, fragments, and other paths are rejected. Both variables are env-only, not settings.
+Missing configuration reports authentication unavailable, not zero quota.
+See the [CLIProxyAPI provider reference](./docs/providers.md#codex-through-cliproxyapi) for account metadata requirements and request boundaries.
+
+For an optional live check, run this command from the repository root with the same environment:
+
+```fish
+node --experimental-strip-types packages/pi-usage/scripts/cliproxy-codex-smoke.ts --live
+```
+
+The script lists accounts and reads quota only. It prints counts, not keys, tokens, account identities, or raw responses.
+For multiple accounts, it stops before a quota read unless you add `--account N`, the explicit one-based listing ordinal.
+Default tests use mocks and never run this live check.
+
 ### OpenAI Codex usage fallback
 
 `openaiCodexUsageFallback` defaults to `false`. It is a workaround for an active `openai` subscription OAuth connection without native usage reporting.
@@ -153,6 +200,7 @@ Currencies and billing targets remain separate.
 | Provider | Reported data |
 | --- | --- |
 | OpenAI Codex | Subscription windows, credits, resets, and model buckets |
+| Codex through CLIProxyAPI | Subscription windows and model buckets for one selected proxy account |
 | Kimi For Coding | Plan request windows and a separate booster wallet |
 | Moonshot AI Global/China | Current API balance in USD/CNY |
 | MiniMax Global/China | Token Plan windows or pay-as-you-go API balance |
@@ -172,6 +220,7 @@ Codex reset redemption requires a freshly matched current OAuth account and expl
 ## 🧭 Current and configured accounts
 
 `Current` identifies the provider and credential used by Pi's selected model.
+For `codex`, it identifies the selected provider only. Its CLIProxyAPI report describes the selected proxy account, not verified inference routing.
 `Configured` identifies runtime auth for another supported provider, not an active provider.
 
 The extension selects one provider target for one query and never flattens targets into provider rows or aggregates every visible target.
@@ -215,7 +264,14 @@ Behavior changes from `pi-codex-usage`:
 
 Credential candidates are collected synchronously in memory and are not cached, persisted, logged, formatted, or appended to the Pi session.
 The protocol carries no account name or extension identity.
-Only exact runtime credential matches are used, and secrets are sent only to a fixed or validated official origin.
+Direct OAuth reports use exact runtime credential matches and fixed or validated official origins.
+The `codex` adapter instead uses env-only CLIProxyAPI management auth at an explicitly trusted URL.
+It sends only the management key to that endpoint and refuses management redirects.
+It calls only account listing and quota forwarding. The forwarded ChatGPT request uses a server-side token placeholder, never the management key or inference headers.
+When ID-token metadata is available, the response `account_id` must match it before publication.
+Otherwise, the authenticated `user_id` and account scope must match the selected target before publication.
+Metadata-free discovery and publication checks make additional read-only quota requests. They do not download credential files.
+Management URL, key, and account changes invalidate cached output. Keys and tokens are not saved in settings or sessions.
 Read-only Codex usage also supports a proxied current model when its resolved Bearer token exactly matches one complete Pi OAuth credential.
 The extension drops proxy headers and sends only the matched Bearer token and `chatgpt-account-id` to the fixed ChatGPT usage endpoint.
 It rejects usage responses without the matching `account_id`.
@@ -237,7 +293,7 @@ An absent or incompatible peer preserves standalone fallback and fail-closed mis
 
 ## 🚧 Limitations
 
-- Only providers with a meaningful usage source and verifiable Pi runtime auth are supported.
+- Direct reports require a meaningful usage source and verifiable Pi runtime auth. CLIProxyAPI reports require explicit management trust and account metadata instead.
 - GitHub Copilot quota, Kimi managed usage, Z.AI quota, and OpenAI Codex reset redemption rely on provider-owned endpoints that may change without notice.
 - Codex reset redemption requires a current ChatGPT OAuth credential from Pi's login or a compatible credential source; Codex API keys cannot redeem earned subscription resets.
 - xAI usage supports only a uniquely matched Pi OAuth subscription credential; xAI API keys and Management API credentials are unsupported.

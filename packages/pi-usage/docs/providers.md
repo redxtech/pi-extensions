@@ -6,6 +6,7 @@ This reference preserves each provider's endpoint, authentication boundary, bill
 The README contains the capability overview and shared security requirements.
 
 - [OpenAI Codex](#openai-codex)
+- [Codex through CLIProxyAPI](#codex-through-cliproxyapi)
 - [Kimi For Coding](#kimi-for-coding)
 - [Moonshot AI](#moonshot-ai-api-balance)
 - [MiniMax](#minimax-token-plan-and-api-balance)
@@ -73,6 +74,57 @@ Pi's freshly resolved access token must exactly match an OAuth credential from P
 API-key credentials, configured-but-not-current Codex accounts, account changes during the flow, and custom or proxy origins fail before mutation.
 Backend-provided titles and descriptions are sanitized for terminal display.
 Opaque credit and account IDs are never shown or persisted by the extension.
+
+### Codex through CLIProxyAPI
+
+- Provider ID: `codex`, including namespaced model IDs such as `codex-proxy/gpt-5.5`
+- Semantics: one selected proxy account's ChatGPT subscription limits, not verified current inference account usage
+- Auth: env-only `CLIPROXYAPI_MANAGEMENT_URL` and `CLIPROXYAPI_MANAGEMENT_KEY`, separate from Pi inference auth
+- URL: explicit trusted HTTP(S) origin or canonical `/v0/management` root, optionally ending in `/`
+- Rejected URL forms: credentials, query, fragment, non-HTTP schemes, and other paths, including `/v1/v0/management`
+- Discovery: `GET {management-root}/auth-files`, without credential-file downloads
+- Quota: `POST {management-root}/api-call`, forwarding only `GET https://chatgpt.com/backend-api/wham/usage`
+- Display: Codex windows, reset countdowns, credits, earned-reset counts, and matching model buckets through the existing Codex formatter
+- Statusline examples: `codex proxy 75% ↻ 1h`, `codex proxy gpt 5.5 60% 5h`
+- Mutations: no Fast mode, reset redemption, or unrelated management operations
+
+Eligible entries have `provider: "codex"`, matching optional `type`, `account_type: "oauth"`, and are not disabled.
+Quota-unavailable OAuth accounts remain eligible, so exhausted quotas can still be read.
+Each entry requires a safe `auth_index`.
+When `id_token` is present, it must contain a valid `chatgpt_account_id`. Malformed supplied metadata fails closed.
+When `id_token` is absent, the entry requires a bounded credential `id`.
+Discovery then reads `wham/usage` with the selected token placeholder and no account header.
+The authenticated response must contain a valid `user_id` and a string `account_id`.
+An empty `account_id` identifies token-default quota scope. It does not verify a workspace account.
+Missing, malformed, or duplicate quota identities fail closed. API-key and other-provider entries are excluded.
+No email, credential-file name, token, or raw account metadata is displayed.
+Choices use the non-secret auth index. Metadata-backed targets retain the index and account ID.
+Metadata-free targets contain the index and a versioned SHA-256 hash of credential ID, user ID, and account scope.
+The hash contains no raw user or credential identity. `selectedTargets.codex` stores the selected target ID.
+One eligible account auto-selects. Multiple accounts require a remembered valid selection or an explicit `/usage` choice.
+A disappeared or changed identity cannot reuse its prior quota report or silently select a different account.
+
+The management key is privileged and can authorize broader management operations outside this extension.
+HTTP has no TLS protection. Its use assumes a trusted endpoint and protected transport, such as the user's tailnet.
+The inference base URL is never a management fallback. No endpoint probing occurs.
+Management requests refuse redirects and omit Pi inference credentials and headers.
+The forwarded header contains `Authorization: "Bearer $TOKEN$"` and a Codex CLI User-Agent.
+`Chatgpt-Account-Id` is included only when a nonempty account ID is available.
+CLIProxyAPI substitutes its OAuth token server-side. The management key is never forwarded to ChatGPT.
+Outer HTTP status and the wrapper's upstream `status_code` are checked independently.
+The wrapper body must be a bounded JSON string with the selected account scope and usable Codex quota data.
+Metadata-free reports also require the same `user_id` as discovery.
+Identity discovery repeats during account validation and publication, with shared deadlines and no credential downloads.
+This path makes additional quota reads, including discovery reads for each eligible metadata-free account.
+An unavailable identity prevents publication instead of substituting another account or reusing a stale report.
+Failures are unavailable reports, not fabricated zero quotas.
+Requests share deadlines, cancellation, bounded response bodies, and request/publication guards.
+Cache identity binds the management URL, key, and selected account. Environment changes are detected on revalidation.
+
+Contract evidence: CLIProxyAPI [`api_tools.go`](https://github.com/router-for-me/CLIProxyAPI/blob/a2976eb8a303f11b4ea5177bce9f9ff752634dfc/internal/api/handlers/management/api_tools.go), [`auth_files.go`](https://github.com/router-for-me/CLIProxyAPI/blob/a2976eb8a303f11b4ea5177bce9f9ff752634dfc/internal/api/handlers/management/auth_files.go), and [`Auth.AccountInfo`](https://github.com/router-for-me/CLIProxyAPI/blob/a2976eb8a303f11b4ea5177bce9f9ff752634dfc/sdk/cliproxy/auth/types.go).
+The [CLIProxyPoolWidget example](https://github.com/murasame612/CLIProxyPoolWidget/blob/main/README.md) supplies the CLI User-Agent convention.
+See [environment setup and the opt-in live smoke command](../README.md#cliproxyapi-account-usage).
+No live quota verification is implied by mocked tests.
 
 ### Kimi For Coding
 

@@ -32,7 +32,7 @@ export function formatUsageReport(
   lines.push(`Semantics: ${report.semantics.label}`, "");
 
   if (report.providerId === "baseten") formatBasetenReport(lines, report);
-  else if (report.providerId === "openai-codex" || report.fallback?.kind === "openai-codex") formatCodexReport(lines, report);
+  else if (report.providerId === "openai-codex" || report.providerId === "codex" || report.fallback?.kind === "openai-codex") formatCodexReport(lines, report);
   else if (report.providerId === "deepseek") formatDeepSeekReport(lines, report);
   else if (report.providerId === "fireworks") formatFireworksReport(lines, report);
   else if (report.providerId === "vercel-ai-gateway") formatVercelAIGatewayReport(lines, report);
@@ -67,8 +67,9 @@ export function formatUsageStatusline(
     return showFallbackLabel ? status?.replace(/^codex/u, "codex fallback") : status;
   }
   if (report.providerId === "baseten") return formatBasetenStatusline(report);
-  if (report.providerId === "openai-codex") {
-    return formatCodexStatusline(report, model, now, showCodexResetCountdown);
+  if (report.providerId === "openai-codex" || report.providerId === "codex") {
+    const status = formatCodexStatusline(report, model, now, showCodexResetCountdown);
+    return report.providerId === "codex" ? status?.replace(/^codex/u, "codex proxy") : status;
   }
   if (report.providerId === "deepseek") return formatDeepSeekStatusline(report);
   if (report.providerId === "fireworks") return formatFireworksStatusline(report);
@@ -566,7 +567,7 @@ function formatCodexCreditsStatus(report: UsageReport): string {
 
 function selectCodexGroup(report: UsageReport, model?: UsageModel): string | undefined {
   const groups = [...new Set(report.buckets.map((bucket) => bucket.groupId ?? bucket.id))];
-  if (model?.provider !== "openai-codex" && !(report.fallback && model?.provider === "openai")) {
+  if (model?.provider !== "openai-codex" && model?.provider !== "codex" && !(report.fallback && model?.provider === "openai")) {
     return groups.includes("codex") ? "codex" : groups[0];
   }
   const modelKeys = normalizedModelKeys(model);
